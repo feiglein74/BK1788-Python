@@ -6,12 +6,14 @@ Vollständige Steuerung und Überwachung des Netzteils mit Echtzeit-Datenvisuali
 import tkinter as tk
 from tkinter import ttk, messagebox
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 import threading
 import time
 import json
 import os
+import signal
+import sys
 from collections import deque
 from datetime import datetime
 from bk1788b import BK1788B
@@ -83,7 +85,7 @@ class PowerSupplyGUI:
         port_combo.grid(row=0, column=1, sticky=tk.W, padx=(0, 10))
 
         # Refresh-Button für Ports
-        ttk.Button(conn_frame, text="🔄", command=self._refresh_ports, width=3).grid(row=0, column=2, padx=(0, 20))
+        ttk.Button(conn_frame, text="Aktualisieren", command=self._refresh_ports).grid(row=0, column=2, padx=(0, 20))
 
         # Baudrate Auswahl (nur gültige Werte für BK1788B)
         ttk.Label(conn_frame, text="Baudrate:").grid(row=0, column=3, sticky=tk.W, padx=(0, 5))
@@ -118,10 +120,11 @@ class PowerSupplyGUI:
         voltage_frame = ttk.Frame(control_frame)
         voltage_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
 
-        self.voltage_var = tk.DoubleVar(value=5.00)
+        self.voltage_var = tk.DoubleVar()
         voltage_spinbox = ttk.Spinbox(voltage_frame, from_=0, to=32, increment=0.01,
                                        textvariable=self.voltage_var, width=10, format="%.2f")
         voltage_spinbox.grid(row=0, column=0, padx=(0, 10))
+        voltage_spinbox.set("5.00")  # Startwert mit 2 Nachkommastellen
 
         ttk.Button(voltage_frame, text="Setzen", command=self._set_voltage).grid(row=0, column=1)
 
@@ -132,42 +135,31 @@ class PowerSupplyGUI:
         current_frame = ttk.Frame(control_frame)
         current_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
 
-        self.current_var = tk.DoubleVar(value=1.00)
+        self.current_var = tk.DoubleVar()
         current_spinbox = ttk.Spinbox(current_frame, from_=0, to=6, increment=0.01,
                                        textvariable=self.current_var, width=10, format="%.2f")
         current_spinbox.grid(row=0, column=0, padx=(0, 10))
+        current_spinbox.set("1.00")  # Startwert mit 2 Nachkommastellen
 
         ttk.Button(current_frame, text="Setzen", command=self._set_current).grid(row=0, column=1)
 
-        # Ausgang Ein/Aus
+        # Ausgang Ein/Aus - Button zeigt Status
         ttk.Separator(control_frame, orient=tk.HORIZONTAL).grid(row=4, column=0, sticky=(tk.W, tk.E), pady=10)
 
         ttk.Label(control_frame, text="Ausgang:", font=("Arial", 10, "bold")).grid(
             row=5, column=0, sticky=tk.W, pady=(0, 5))
 
-        output_control_frame = ttk.Frame(control_frame)
-        output_control_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.output_btn = ttk.Button(control_frame, text="⬤ AUS",
+                                      command=self._toggle_output, state=tk.DISABLED, width=20)
+        self.output_btn.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
-        self.output_btn = ttk.Button(output_control_frame, text="Ausgang EIN",
-                                      command=self._toggle_output, state=tk.DISABLED, width=18)
-        self.output_btn.grid(row=0, column=0, sticky=tk.W)
-
-        self.output_status_label = ttk.Label(output_control_frame, text="Status: --", font=("Arial", 9))
-        self.output_status_label.grid(row=1, column=0, sticky=tk.W, pady=(2, 0))
-
-        # Remote-Modus
+        # Remote-Modus - Button zeigt Status
         ttk.Label(control_frame, text="Remote-Steuerung:", font=("Arial", 10, "bold")).grid(
-            row=7, column=0, sticky=tk.W, pady=(10, 5))
+            row=7, column=0, sticky=tk.W, pady=(0, 5))
 
-        remote_control_frame = ttk.Frame(control_frame)
-        remote_control_frame.grid(row=8, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
-
-        self.remote_btn = ttk.Button(remote_control_frame, text="Remote-Modus EIN",
-                                      command=self._toggle_remote, state=tk.DISABLED, width=18)
-        self.remote_btn.grid(row=0, column=0, sticky=tk.W)
-
-        self.remote_status_label = ttk.Label(remote_control_frame, text="Status: --", font=("Arial", 9))
-        self.remote_status_label.grid(row=1, column=0, sticky=tk.W, pady=(2, 0))
+        self.remote_btn = ttk.Button(control_frame, text="⬤ Inaktiv",
+                                      command=self._toggle_remote, state=tk.DISABLED, width=20)
+        self.remote_btn.grid(row=8, column=0, sticky=(tk.W, tk.E))
 
         # ===== Anzeigebereich =====
         display_frame = ttk.LabelFrame(main_frame, text="Aktuelle Werte", padding="10")
@@ -175,37 +167,37 @@ class PowerSupplyGUI:
 
         # Große Anzeigen für Spannung und Strom
         # Spannung mit 3. Nachkommastelle gedimmt (Netzteil hat nur 2 Stellen Genauigkeit)
-        voltage_frame = tk.Frame(display_frame, bg=display_frame.cget('background'))
+        voltage_frame = ttk.Frame(display_frame)
         voltage_frame.grid(row=0, column=0, pady=(10, 5))
 
         self.voltage_main = tk.Label(voltage_frame, text="0.00", font=("Arial", 24, "bold"),
-                                      fg="blue", bg=display_frame.cget('background'))
+                                      fg="blue")
         self.voltage_main.pack(side=tk.LEFT)
 
         self.voltage_faint = tk.Label(voltage_frame, text="0", font=("Arial", 24, "bold"),
-                                       fg="#8080FF", bg=display_frame.cget('background'))  # Helles Blau
+                                       fg="#8080FF")  # Helles Blau
         self.voltage_faint.pack(side=tk.LEFT)
 
         self.voltage_unit = tk.Label(voltage_frame, text=" V", font=("Arial", 24, "bold"),
-                                      fg="blue", bg=display_frame.cget('background'))
+                                      fg="blue")
         self.voltage_unit.pack(side=tk.LEFT)
 
         ttk.Label(display_frame, text="Spannung").grid(row=1, column=0, pady=(0, 15))
 
         # Strom mit 3. Nachkommastelle gedimmt
-        current_frame = tk.Frame(display_frame, bg=display_frame.cget('background'))
+        current_frame = ttk.Frame(display_frame)
         current_frame.grid(row=2, column=0, pady=(10, 5))
 
         self.current_main = tk.Label(current_frame, text="0.00", font=("Arial", 24, "bold"),
-                                      fg="red", bg=display_frame.cget('background'))
+                                      fg="red")
         self.current_main.pack(side=tk.LEFT)
 
         self.current_faint = tk.Label(current_frame, text="0", font=("Arial", 24, "bold"),
-                                       fg="#FF8080", bg=display_frame.cget('background'))  # Helles Rot
+                                       fg="#FF8080")  # Helles Rot
         self.current_faint.pack(side=tk.LEFT)
 
         self.current_unit = tk.Label(current_frame, text=" A", font=("Arial", 24, "bold"),
-                                      fg="red", bg=display_frame.cget('background'))
+                                      fg="red")
         self.current_unit.pack(side=tk.LEFT)
 
         ttk.Label(display_frame, text="Strom").grid(row=3, column=0, pady=(0, 15))
@@ -244,6 +236,8 @@ class PowerSupplyGUI:
         self.ax1.legend(loc='upper left', fontsize=9)
         self.ax1.grid(True, alpha=0.3)
         self.ax1.tick_params(axis='both', labelsize=9)
+        self.ax1.set_xlim(0, 10)  # Initiale Achsenlimits
+        self.ax1.set_ylim(0, 10)
 
         # Leistungs-Plot
         self.line_power, = self.ax2.plot([], [], 'g-', label='Leistung (W)', linewidth=2)
@@ -252,14 +246,23 @@ class PowerSupplyGUI:
         self.ax2.legend(loc='upper left', fontsize=9)
         self.ax2.grid(True, alpha=0.3)
         self.ax2.tick_params(axis='both', labelsize=9)
+        self.ax2.set_xlim(0, 10)  # Initiale Achsenlimits
+        self.ax2.set_ylim(0, 10)
 
-        # Tight layout mit padding für bessere Beschriftungen
-        self.fig.tight_layout(pad=2.0, h_pad=2.0)
+        # Tight layout mit mehr Platz für Beschriftungen
+        # left/right/top/bottom definieren die Ränder für Beschriftungen
+        self.fig.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.08, hspace=0.25)
 
         # Canvas für Matplotlib
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # Navigation-Toolbar (Zoom, Pan, Scroll, Home, Save)
+        toolbar_frame = ttk.Frame(graph_frame)
+        toolbar_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
+        self.toolbar.update()
 
         # Startzeit für relative Zeitachse
         self.start_time = None
@@ -284,6 +287,24 @@ class PowerSupplyGUI:
                 self.output_btn.config(state=tk.NORMAL)
                 self.remote_btn.config(state=tk.NORMAL)
 
+                # Einstellungen sofort speichern (für nächsten Start)
+                self._save_settings()
+
+                # Status lesen und Remote-Modus ausschalten falls noch aktiv
+                # (könnte von vorherigem Programmlauf noch gesperrt sein)
+                status = self.psu.read_status()
+                if status:
+                    if status['remote_mode']:
+                        # Netzteil entsperren
+                        self.psu.set_remote_mode(False)
+                        # Nochmal Status lesen für aktuelle Sollwerte
+                        status = self.psu.read_status()
+
+                    if status:
+                        # Sollwerte vom Netzteil in GUI übernehmen
+                        self.voltage_var.set(status['voltage_setpoint'])
+                        self.current_var.set(status['current_setpoint'])
+
                 # Monitoring starten
                 self._start_monitoring()
 
@@ -296,6 +317,12 @@ class PowerSupplyGUI:
             self._stop_monitoring()
 
             if self.psu:
+                # Remote-Modus ausschalten damit Frontpanel wieder bedienbar ist
+                try:
+                    self.psu.set_remote_mode(False)
+                except:
+                    pass  # Ignorieren falls Kommunikation schon unterbrochen
+
                 self.psu.disconnect()
                 self.psu = None
 
@@ -375,7 +402,17 @@ class PowerSupplyGUI:
             self.power_display.config(text=f"{power:.3f} W")
 
             # Status-Labels aktualisieren (rechte Seite - nur Modus und Temp)
-            self.mode_label.config(text=f"Modus: {status['mode']}")
+            # Modus mit Farbcodierung: CV=Blau, CC=Orange, Unreg=Grau
+            mode = status['mode']
+            self.mode_label.config(text=f"Modus: {mode}")
+
+            if mode == 'CV':
+                self.mode_label.config(foreground="blue")
+            elif mode == 'CC':
+                self.mode_label.config(foreground="orange")
+            else:
+                self.mode_label.config(foreground="gray")
+
             self.temp_label.config(text=f"Übertemperatur: {'WARNUNG!' if status['over_temp'] else 'OK'}")
 
             if status['over_temp']:
@@ -383,20 +420,20 @@ class PowerSupplyGUI:
             else:
                 self.temp_label.config(foreground="black")
 
-            # Buttons und zugehörige Status-Labels aktualisieren (linke Seite)
+            # Button-Status aktualisieren (Button zeigt aktuellen Zustand)
             if status['output_on']:
-                self.output_btn.config(text="Ausgang AUS")
-                self.output_status_label.config(text="Status: EIN", foreground="green")
+                self.output_btn.config(text="● EIN")
             else:
-                self.output_btn.config(text="Ausgang EIN")
-                self.output_status_label.config(text="Status: AUS", foreground="gray")
+                self.output_btn.config(text="⬤ AUS")
 
             if status['remote_mode']:
-                self.remote_btn.config(text="Remote-Modus AUS")
-                self.remote_status_label.config(text="Status: Aktiv", foreground="green")
+                self.remote_btn.config(text="● Aktiv")
             else:
-                self.remote_btn.config(text="Remote-Modus EIN")
-                self.remote_status_label.config(text="Status: Inaktiv", foreground="gray")
+                self.remote_btn.config(text="⬤ Inaktiv")
+                # Remote-Modus aus: Sollwerte vom Netzteil nachführen
+                # (könnte am Frontpanel geändert worden sein)
+                self.voltage_var.set(status['voltage_setpoint'])
+                self.current_var.set(status['current_setpoint'])
 
         # Graphen aktualisieren
         if len(self.timestamps) > 0:
@@ -416,8 +453,10 @@ class PowerSupplyGUI:
         # Leistungs-Plot aktualisieren
         self.line_power.set_data(times, powers)
 
-        # Achsen automatisch skalieren
-        if len(times) > 0:
+        # Nur automatisch skalieren wenn Toolbar im Home-Modus ist
+        # (d.h. Benutzer hat nicht gezoomt/gepanned)
+        if len(times) > 0 and self.toolbar.mode == '':
+            # Auto-Skalierung nur wenn nicht manuell gezoomt
             self.ax1.set_xlim(min(times), max(times))
             self.ax2.set_xlim(min(times), max(times))
 
@@ -430,12 +469,7 @@ class PowerSupplyGUI:
                 p_max = max(powers) if max(powers) > 0 else 1
                 self.ax2.set_ylim(0, p_max * 1.1)
 
-        # Layout anpassen damit Beschriftungen nicht abgeschnitten werden
-        try:
-            self.fig.tight_layout(pad=2.0, h_pad=2.0)
-        except:
-            pass  # Falls tight_layout fehlschlägt, einfach ignorieren
-
+        # Canvas neu zeichnen
         self.canvas.draw_idle()
 
     def _set_voltage(self):
@@ -484,7 +518,12 @@ class PowerSupplyGUI:
         current_state = self.last_status.get('remote_mode', False)
         new_state = not current_state
 
-        if not self.psu.set_remote_mode(new_state):
+        if self.psu.set_remote_mode(new_state):
+            # Wenn Remote-Modus aktiviert wird: GUI-Werte ans Netzteil senden
+            if new_state:
+                self.psu.set_voltage(self.voltage_var.get())
+                self.psu.set_current(self.current_var.get())
+        else:
             # Nur bei Fehler Meldung zeigen
             messagebox.showerror("Fehler", "Remote-Modus konnte nicht geschaltet werden")
 
@@ -533,7 +572,17 @@ class PowerSupplyGUI:
         self._save_settings()
 
         if self.connected:
-            self._toggle_connection()
+            # Monitoring stoppen
+            self._stop_monitoring()
+
+            # Remote-Modus ausschalten damit Frontpanel wieder bedienbar ist
+            if self.psu:
+                try:
+                    self.psu.set_remote_mode(False)
+                except:
+                    pass  # Ignorieren falls Kommunikation schon unterbrochen
+
+                self.psu.disconnect()
 
         self.root.destroy()
 
@@ -542,6 +591,15 @@ def main():
     """Hauptfunktion"""
     root = tk.Tk()
     app = PowerSupplyGUI(root)
+
+    # Cleanup bei Strg+C (SIGINT)
+    def signal_handler(sig, frame):
+        print("\nProgramm wird beendet...")
+        app.on_closing()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 
