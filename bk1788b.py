@@ -208,13 +208,6 @@ class BK1788B:
         if not 0.0 <= voltage <= 32.0:
             raise ValueError("Spannung muss zwischen 0 und 32V liegen")
 
-        # WICHTIG: Zuerst Remote-Modus aktivieren (falls nicht schon aktiv)
-        # Ohne Remote-Modus werden Set-Kommandos mit 0xB0 (Unrecognized) abgelehnt
-        status = self.read_status()
-        if status and not status['remote_mode']:
-            if not self.set_remote_mode(True):
-                return False
-
         # In Millivolt umrechnen
         voltage_mv = int(voltage * 1000)
 
@@ -245,12 +238,6 @@ class BK1788B:
         """
         if not 0.0 <= current <= 6.0:
             raise ValueError("Strom muss zwischen 0 und 6A liegen")
-
-        # WICHTIG: Zuerst Remote-Modus aktivieren (falls nicht schon aktiv)
-        status = self.read_status()
-        if status and not status['remote_mode']:
-            if not self.set_remote_mode(True):
-                return False
 
         # In Milliampere umrechnen
         current_ma = int(current * 1000)

@@ -122,11 +122,11 @@ class PowerSupplyGUI:
         voltage_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
 
         self.voltage_var = tk.StringVar()  # StringVar statt DoubleVar für Komma-Unterstützung
-        voltage_spinbox = ttk.Spinbox(voltage_frame, from_=0, to=32, increment=0.01,
+        self.voltage_spinbox = ttk.Spinbox(voltage_frame, from_=0, to=32, increment=0.01,
                                        textvariable=self.voltage_var, width=10, format="%.2f")
-        voltage_spinbox.grid(row=0, column=0, padx=(0, 10))
-        voltage_spinbox.set("5.00")  # Startwert mit 2 Nachkommastellen
-        voltage_spinbox.bind('<Return>', lambda e: self._set_voltage())  # Enter-Taste
+        self.voltage_spinbox.grid(row=0, column=0, padx=(0, 10))
+        self.voltage_spinbox.set("5.00")  # Startwert mit 2 Nachkommastellen
+        self.voltage_spinbox.bind('<Return>', lambda e: self._set_voltage())  # Enter-Taste
 
         ttk.Button(voltage_frame, text="Setzen", command=self._set_voltage).grid(row=0, column=1)
 
@@ -138,11 +138,11 @@ class PowerSupplyGUI:
         current_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
 
         self.current_var = tk.StringVar()  # StringVar statt DoubleVar für Komma-Unterstützung
-        current_spinbox = ttk.Spinbox(current_frame, from_=0, to=6, increment=0.01,
+        self.current_spinbox = ttk.Spinbox(current_frame, from_=0, to=6, increment=0.01,
                                        textvariable=self.current_var, width=10, format="%.2f")
-        current_spinbox.grid(row=0, column=0, padx=(0, 10))
-        current_spinbox.set("1.00")  # Startwert mit 2 Nachkommastellen
-        current_spinbox.bind('<Return>', lambda e: self._set_current())  # Enter-Taste
+        self.current_spinbox.grid(row=0, column=0, padx=(0, 10))
+        self.current_spinbox.set("1.00")  # Startwert mit 2 Nachkommastellen
+        self.current_spinbox.bind('<Return>', lambda e: self._set_current())  # Enter-Taste
 
         ttk.Button(current_frame, text="Setzen", command=self._set_current).grid(row=0, column=1)
 
@@ -453,10 +453,27 @@ class PowerSupplyGUI:
                 self.remote_btn.config(text="● Aktiv")
             else:
                 self.remote_btn.config(text="⬤ Inaktiv")
-                # Remote-Modus aus: Sollwerte vom Netzteil nachführen
-                # (könnte am Frontpanel geändert worden sein)
-                self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
-                self.current_var.set(f"{status['current_setpoint']:.2f}")
+                # Remote-Modus aus: Nur aktualisieren wenn Netzteil-Sollwert sich geändert hat
+                # (Änderung am Frontpanel) - sonst GUI-Änderungen nicht überschreiben
+                try:
+                    current_gui_voltage = float(self.voltage_var.get().replace(',', '.'))
+                    netzteil_voltage = status['voltage_setpoint']
+                    # Nur aktualisieren wenn Differenz > 0.01V (verhindert Rundungsfehler)
+                    if abs(current_gui_voltage - netzteil_voltage) > 0.01:
+                        self.voltage_var.set(f"{netzteil_voltage:.2f}")
+                except (ValueError, AttributeError):
+                    # Ungültiger Wert in GUI - überschreiben mit Netzteil-Wert
+                    self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
+
+                try:
+                    current_gui_current = float(self.current_var.get().replace(',', '.'))
+                    netzteil_current = status['current_setpoint']
+                    # Nur aktualisieren wenn Differenz > 0.01A
+                    if abs(current_gui_current - netzteil_current) > 0.01:
+                        self.current_var.set(f"{netzteil_current:.2f}")
+                except (ValueError, AttributeError):
+                    # Ungültiger Wert in GUI - überschreiben mit Netzteil-Wert
+                    self.current_var.set(f"{status['current_setpoint']:.2f}")
 
         # Graphen aktualisieren
         if len(self.timestamps) > 0:
@@ -551,9 +568,32 @@ class PowerSupplyGUI:
             voltage_str = self.voltage_var.get().replace(',', '.')
             voltage = float(voltage_str)
 
-            if not self.psu.set_voltage(voltage):
-                # Nur bei Fehler Meldung zeigen
-                messagebox.showerror("Fehler", "Spannung konnte nicht gesetzt werden")
+            # Status prüfen: Remote-Modus aktiv?
+            status = self.psu.read_status()
+            if status:
+                remote_was_off = not status['remote_mode']
+                print(f"[DEBUG] Vor Spannung setzen: Remote-Modus={'AUS' if remote_was_off else 'EIN'}")
+
+                # Falls Remote-Modus aus: temporär aktivieren
+                if remote_was_off:
+                    print("[DEBUG] Aktiviere Remote-Modus temporär...")
+                    self.psu.set_remote_mode(True)
+
+                # Spannung setzen
+                print(f"[DEBUG] Setze Spannung auf {voltage}V...")
+                success = self.psu.set_voltage(voltage)
+                print(f"[DEBUG] Spannung setzen: {'Erfolg' if success else 'Fehler'}")
+
+                # Remote-Modus wieder deaktivieren falls vorher aus
+                if remote_was_off:
+                    print("[DEBUG] Deaktiviere Remote-Modus wieder...")
+                    self.psu.set_remote_mode(False)
+
+                if not success:
+                    messagebox.showerror("Fehler", "Spannung konnte nicht gesetzt werden")
+            else:
+                messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
+
         except ValueError as e:
             messagebox.showerror("Fehler", f"Ungültiger Wert: {e}")
 
@@ -567,9 +607,27 @@ class PowerSupplyGUI:
             current_str = self.current_var.get().replace(',', '.')
             current = float(current_str)
 
-            if not self.psu.set_current(current):
-                # Nur bei Fehler Meldung zeigen
-                messagebox.showerror("Fehler", "Strom konnte nicht gesetzt werden")
+            # Status prüfen: Remote-Modus aktiv?
+            status = self.psu.read_status()
+            if status:
+                remote_was_off = not status['remote_mode']
+
+                # Falls Remote-Modus aus: temporär aktivieren
+                if remote_was_off:
+                    self.psu.set_remote_mode(True)
+
+                # Strom setzen
+                success = self.psu.set_current(current)
+
+                # Remote-Modus wieder deaktivieren falls vorher aus
+                if remote_was_off:
+                    self.psu.set_remote_mode(False)
+
+                if not success:
+                    messagebox.showerror("Fehler", "Strom konnte nicht gesetzt werden")
+            else:
+                messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
+
         except ValueError as e:
             messagebox.showerror("Fehler", f"Ungültiger Wert: {e}")
 
@@ -581,9 +639,26 @@ class PowerSupplyGUI:
         current_state = self.last_status.get('output_on', False)
         new_state = not current_state
 
-        if not self.psu.set_output(new_state):
-            # Nur bei Fehler Meldung zeigen
-            messagebox.showerror("Fehler", "Ausgang konnte nicht geschaltet werden")
+        # Status prüfen: Remote-Modus aktiv?
+        status = self.psu.read_status()
+        if status:
+            remote_was_off = not status['remote_mode']
+
+            # Falls Remote-Modus aus: temporär aktivieren
+            if remote_was_off:
+                self.psu.set_remote_mode(True)
+
+            # Ausgang schalten
+            success = self.psu.set_output(new_state)
+
+            # Remote-Modus wieder deaktivieren falls vorher aus
+            if remote_was_off:
+                self.psu.set_remote_mode(False)
+
+            if not success:
+                messagebox.showerror("Fehler", "Ausgang konnte nicht geschaltet werden")
+        else:
+            messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
 
     def _toggle_remote(self):
         """Schaltet den Remote-Modus ein/aus"""
