@@ -138,32 +138,24 @@ class BK1788B:
 
             # Paket erstellen und senden
             packet = self._create_packet(command, data)
-            print(f"[DEBUG] Sende Paket (Cmd 0x{command:02X}): {' '.join(f'{b:02X}' for b in packet[:10])}... Checksum: {packet[25]:02X}")
-
-            bytes_written = self.serial.write(packet)
-            print(f"[DEBUG] {bytes_written} Bytes gesendet")
+            self.serial.write(packet)
 
             # Kurze Pause für das Netzteil
             time.sleep(0.05)
 
             # Auf Antwort warten (immer 26 Bytes)
             response = self.serial.read(26)
-            print(f"[DEBUG] {len(response)} Bytes empfangen")
 
             if len(response) != 26:
-                print(f"[DEBUG] Fehler: Nur {len(response)} von 26 Bytes empfangen (Timeout?)")
                 return None
 
             # Prüfen ob Response nur Nullen enthält
             if all(b == 0 for b in response):
-                print("[DEBUG] FEHLER: Response besteht nur aus Nullen - Netzteil antwortet nicht!")
                 return None
 
             # Checksumme prüfen
             calculated_checksum = sum(response[0:25]) % 256
             if response[25] != calculated_checksum:
-                print(f"[DEBUG] Checksummen-Fehler: Erwartet {calculated_checksum:02X}, Erhalten {response[25]:02X}")
-                print(f"[DEBUG] Vollständige Response: {' '.join(f'{b:02X}' for b in response)}")
                 return None
 
             return bytearray(response)
@@ -181,18 +173,9 @@ class BK1788B:
         data = [0x01 if enable else 0x00] + [0x00] * 21
         response = self._send_command(self.CMD_SET_REMOTE, data)
 
-        if response:
-            # Debug-Ausgabe
-            print(f"[DEBUG] Remote-Mode Response: {' '.join(f'{b:02X}' for b in response[:10])}")
-            print(f"[DEBUG] Command: {response[2]:02X}, Status: {response[3]:02X}")
+        if response and response[2] == self.CMD_STATUS_RESPONSE:
+            return response[3] == self.STATUS_SUCCESS
 
-            if response[2] == self.CMD_STATUS_RESPONSE:
-                success = response[3] == self.STATUS_SUCCESS
-                if not success:
-                    print(f"[DEBUG] Status-Code ist nicht 0x80 (Success), sondern 0x{response[3]:02X}")
-                return success
-
-        print("[DEBUG] Keine Response oder ungültige Response erhalten")
         return False
 
     def set_output(self, enable: bool) -> bool:
@@ -229,9 +212,7 @@ class BK1788B:
         # Ohne Remote-Modus werden Set-Kommandos mit 0xB0 (Unrecognized) abgelehnt
         status = self.read_status()
         if status and not status['remote_mode']:
-            print("[DEBUG] Remote-Modus ist nicht aktiv - aktiviere jetzt...")
             if not self.set_remote_mode(True):
-                print("[DEBUG] Konnte Remote-Modus nicht aktivieren!")
                 return False
 
         # In Millivolt umrechnen
@@ -245,30 +226,10 @@ class BK1788B:
             (voltage_mv >> 24) & 0xFF
         ] + [0x00] * 18
 
-        print(f"[DEBUG] Set Voltage: {voltage}V = {voltage_mv}mV")
-        print(f"[DEBUG] Data bytes: {' '.join(f'{b:02X}' for b in data[:6])}")
-
         response = self._send_command(self.CMD_SET_VOLTAGE, data)
 
-        if response:
-            print(f"[DEBUG] Voltage Response: {' '.join(f'{b:02X}' for b in response[:10])}")
-            print(f"[DEBUG] Command: {response[2]:02X}, Status: {response[3]:02X}")
-
-            if response[2] == self.CMD_STATUS_RESPONSE:
-                success = response[3] == self.STATUS_SUCCESS
-                if not success:
-                    status_names = {
-                        0x80: "Success",
-                        0x90: "Checksum Error",
-                        0xA0: "Parameter Error",
-                        0xB0: "Unrecognized Command (Remote-Modus nicht aktiv?)",
-                        0xC0: "Invalid Command"
-                    }
-                    status_name = status_names.get(response[3], f"Unknown (0x{response[3]:02X})")
-                    print(f"[DEBUG] Fehler: {status_name}")
-                return success
-        else:
-            print("[DEBUG] Keine Response erhalten")
+        if response and response[2] == self.CMD_STATUS_RESPONSE:
+            return response[3] == self.STATUS_SUCCESS
 
         return False
 
@@ -288,9 +249,7 @@ class BK1788B:
         # WICHTIG: Zuerst Remote-Modus aktivieren (falls nicht schon aktiv)
         status = self.read_status()
         if status and not status['remote_mode']:
-            print("[DEBUG] Remote-Modus ist nicht aktiv - aktiviere jetzt...")
             if not self.set_remote_mode(True):
-                print("[DEBUG] Konnte Remote-Modus nicht aktivieren!")
                 return False
 
         # In Milliampere umrechnen
@@ -302,30 +261,10 @@ class BK1788B:
             (current_ma >> 8) & 0xFF
         ] + [0x00] * 20
 
-        print(f"[DEBUG] Set Current: {current}A = {current_ma}mA")
-        print(f"[DEBUG] Data bytes: {' '.join(f'{b:02X}' for b in data[:6])}")
-
         response = self._send_command(self.CMD_SET_CURRENT, data)
 
-        if response:
-            print(f"[DEBUG] Current Response: {' '.join(f'{b:02X}' for b in response[:10])}")
-            print(f"[DEBUG] Command: {response[2]:02X}, Status: {response[3]:02X}")
-
-            if response[2] == self.CMD_STATUS_RESPONSE:
-                success = response[3] == self.STATUS_SUCCESS
-                if not success:
-                    status_names = {
-                        0x80: "Success",
-                        0x90: "Checksum Error",
-                        0xA0: "Parameter Error",
-                        0xB0: "Unrecognized Command (Remote-Modus nicht aktiv?)",
-                        0xC0: "Invalid Command"
-                    }
-                    status_name = status_names.get(response[3], f"Unknown (0x{response[3]:02X})")
-                    print(f"[DEBUG] Fehler: {status_name}")
-                return success
-        else:
-            print("[DEBUG] Keine Response erhalten")
+        if response and response[2] == self.CMD_STATUS_RESPONSE:
+            return response[3] == self.STATUS_SUCCESS
 
         return False
 

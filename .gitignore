@@ -55,3 +55,6 @@ dmypy.json
 
 # OS
 Thumbs.db
+
+# GUI Config (persönliche Einstellungen)
+gui_config.json

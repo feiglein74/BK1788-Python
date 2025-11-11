@@ -10,9 +10,12 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import threading
 import time
+import json
+import os
 from collections import deque
 from datetime import datetime
 from bk1788b import BK1788B
+import serial.tools.list_ports
 
 
 class PowerSupplyGUI:
@@ -36,6 +39,12 @@ class PowerSupplyGUI:
         self.voltage_data = deque(maxlen=self.max_points)
         self.current_data = deque(maxlen=self.max_points)
         self.power_data = deque(maxlen=self.max_points)
+
+        # Config-Datei für Einstellungen
+        self.config_file = os.path.join(os.path.dirname(__file__), 'gui_config.json')
+
+        # Letzte Einstellungen laden
+        self.last_settings = self._load_settings()
 
         # GUI aufbauen
         self._create_widgets()
@@ -61,23 +70,42 @@ class PowerSupplyGUI:
         conn_frame = ttk.LabelFrame(main_frame, text="Verbindung", padding="10")
         conn_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
 
+        # COM-Port Auswahl mit automatischer Erkennung
         ttk.Label(conn_frame, text="COM-Port:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
-        self.port_var = tk.StringVar(value="COM3")
-        port_entry = ttk.Entry(conn_frame, textvariable=self.port_var, width=10)
-        port_entry.grid(row=0, column=1, sticky=tk.W, padx=(0, 20))
 
-        ttk.Label(conn_frame, text="Baudrate:").grid(row=0, column=2, sticky=tk.W, padx=(0, 5))
-        self.baudrate_var = tk.StringVar(value="4800")
-        baudrate_combo = ttk.Combobox(conn_frame, textvariable=self.baudrate_var,
-                                       values=["4800", "9600", "19200", "38400"],
-                                       width=10, state="readonly")
-        baudrate_combo.grid(row=0, column=3, sticky=tk.W, padx=(0, 20))
+        # Liste verfügbarer Ports
+        available_ports = self._get_available_ports()
+        default_port = self.last_settings.get('port', available_ports[0] if available_ports else 'COM3')
+
+        self.port_var = tk.StringVar(value=default_port)
+        port_combo = ttk.Combobox(conn_frame, textvariable=self.port_var,
+                                   values=available_ports, width=12, state="readonly")
+        port_combo.grid(row=0, column=1, sticky=tk.W, padx=(0, 10))
+
+        # Refresh-Button für Ports
+        ttk.Button(conn_frame, text="🔄", command=self._refresh_ports, width=3).grid(row=0, column=2, padx=(0, 20))
+
+        # Baudrate Auswahl (nur gültige Werte für BK1788B)
+        ttk.Label(conn_frame, text="Baudrate:").grid(row=0, column=3, sticky=tk.W, padx=(0, 5))
+
+        # BK1788B unterstützt: 4800, 9600, 19200, 38400
+        valid_baudrates = ["4800", "9600", "19200", "38400"]
+        default_baudrate = self.last_settings.get('baudrate', '4800')
+
+        self.baudrate_var = tk.StringVar(value=default_baudrate)
+        self.baudrate_combo = ttk.Combobox(conn_frame, textvariable=self.baudrate_var,
+                                            values=valid_baudrates,
+                                            width=10, state="readonly")
+        self.baudrate_combo.grid(row=0, column=4, sticky=tk.W, padx=(0, 20))
 
         self.connect_btn = ttk.Button(conn_frame, text="Verbinden", command=self._toggle_connection)
-        self.connect_btn.grid(row=0, column=4, padx=(0, 10))
+        self.connect_btn.grid(row=0, column=5, padx=(0, 10))
 
         self.status_label = ttk.Label(conn_frame, text="● Nicht verbunden", foreground="red")
-        self.status_label.grid(row=0, column=5, sticky=tk.W)
+        self.status_label.grid(row=0, column=6, sticky=tk.W)
+
+        # Port-Combo für Refresh speichern
+        self.port_combo = port_combo
 
         # ===== Steuerungsbereich =====
         control_frame = ttk.LabelFrame(main_frame, text="Steuerung", padding="10")
@@ -90,9 +118,9 @@ class PowerSupplyGUI:
         voltage_frame = ttk.Frame(control_frame)
         voltage_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
 
-        self.voltage_var = tk.DoubleVar(value=5.0)
-        voltage_spinbox = ttk.Spinbox(voltage_frame, from_=0, to=32, increment=0.1,
-                                       textvariable=self.voltage_var, width=10)
+        self.voltage_var = tk.DoubleVar(value=5.00)
+        voltage_spinbox = ttk.Spinbox(voltage_frame, from_=0, to=32, increment=0.01,
+                                       textvariable=self.voltage_var, width=10, format="%.2f")
         voltage_spinbox.grid(row=0, column=0, padx=(0, 10))
 
         ttk.Button(voltage_frame, text="Setzen", command=self._set_voltage).grid(row=0, column=1)
@@ -104,9 +132,9 @@ class PowerSupplyGUI:
         current_frame = ttk.Frame(control_frame)
         current_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
 
-        self.current_var = tk.DoubleVar(value=1.0)
+        self.current_var = tk.DoubleVar(value=1.00)
         current_spinbox = ttk.Spinbox(current_frame, from_=0, to=6, increment=0.01,
-                                       textvariable=self.current_var, width=10)
+                                       textvariable=self.current_var, width=10, format="%.2f")
         current_spinbox.grid(row=0, column=0, padx=(0, 10))
 
         ttk.Button(current_frame, text="Setzen", command=self._set_current).grid(row=0, column=1)
@@ -114,79 +142,119 @@ class PowerSupplyGUI:
         # Ausgang Ein/Aus
         ttk.Separator(control_frame, orient=tk.HORIZONTAL).grid(row=4, column=0, sticky=(tk.W, tk.E), pady=10)
 
-        self.output_btn = ttk.Button(control_frame, text="Ausgang EIN",
-                                      command=self._toggle_output, state=tk.DISABLED)
-        self.output_btn.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        ttk.Label(control_frame, text="Ausgang:", font=("Arial", 10, "bold")).grid(
+            row=5, column=0, sticky=tk.W, pady=(0, 5))
+
+        output_control_frame = ttk.Frame(control_frame)
+        output_control_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+
+        self.output_btn = ttk.Button(output_control_frame, text="Ausgang EIN",
+                                      command=self._toggle_output, state=tk.DISABLED, width=18)
+        self.output_btn.grid(row=0, column=0, sticky=tk.W)
+
+        self.output_status_label = ttk.Label(output_control_frame, text="Status: --", font=("Arial", 9))
+        self.output_status_label.grid(row=1, column=0, sticky=tk.W, pady=(2, 0))
 
         # Remote-Modus
-        self.remote_btn = ttk.Button(control_frame, text="Remote-Modus EIN",
-                                      command=self._toggle_remote, state=tk.DISABLED)
-        self.remote_btn.grid(row=6, column=0, sticky=(tk.W, tk.E))
+        ttk.Label(control_frame, text="Remote-Steuerung:", font=("Arial", 10, "bold")).grid(
+            row=7, column=0, sticky=tk.W, pady=(10, 5))
+
+        remote_control_frame = ttk.Frame(control_frame)
+        remote_control_frame.grid(row=8, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+
+        self.remote_btn = ttk.Button(remote_control_frame, text="Remote-Modus EIN",
+                                      command=self._toggle_remote, state=tk.DISABLED, width=18)
+        self.remote_btn.grid(row=0, column=0, sticky=tk.W)
+
+        self.remote_status_label = ttk.Label(remote_control_frame, text="Status: --", font=("Arial", 9))
+        self.remote_status_label.grid(row=1, column=0, sticky=tk.W, pady=(2, 0))
 
         # ===== Anzeigebereich =====
         display_frame = ttk.LabelFrame(main_frame, text="Aktuelle Werte", padding="10")
         display_frame.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10), padx=(10, 0))
 
         # Große Anzeigen für Spannung und Strom
-        self.voltage_display = ttk.Label(display_frame, text="0.000 V",
-                                          font=("Arial", 24, "bold"), foreground="blue")
-        self.voltage_display.grid(row=0, column=0, pady=(10, 5))
+        # Spannung mit 3. Nachkommastelle gedimmt (Netzteil hat nur 2 Stellen Genauigkeit)
+        voltage_frame = tk.Frame(display_frame, bg=display_frame.cget('background'))
+        voltage_frame.grid(row=0, column=0, pady=(10, 5))
+
+        self.voltage_main = tk.Label(voltage_frame, text="0.00", font=("Arial", 24, "bold"),
+                                      fg="blue", bg=display_frame.cget('background'))
+        self.voltage_main.pack(side=tk.LEFT)
+
+        self.voltage_faint = tk.Label(voltage_frame, text="0", font=("Arial", 24, "bold"),
+                                       fg="#8080FF", bg=display_frame.cget('background'))  # Helles Blau
+        self.voltage_faint.pack(side=tk.LEFT)
+
+        self.voltage_unit = tk.Label(voltage_frame, text=" V", font=("Arial", 24, "bold"),
+                                      fg="blue", bg=display_frame.cget('background'))
+        self.voltage_unit.pack(side=tk.LEFT)
 
         ttk.Label(display_frame, text="Spannung").grid(row=1, column=0, pady=(0, 15))
 
-        self.current_display = ttk.Label(display_frame, text="0.000 A",
-                                          font=("Arial", 24, "bold"), foreground="red")
-        self.current_display.grid(row=2, column=0, pady=(10, 5))
+        # Strom mit 3. Nachkommastelle gedimmt
+        current_frame = tk.Frame(display_frame, bg=display_frame.cget('background'))
+        current_frame.grid(row=2, column=0, pady=(10, 5))
+
+        self.current_main = tk.Label(current_frame, text="0.00", font=("Arial", 24, "bold"),
+                                      fg="red", bg=display_frame.cget('background'))
+        self.current_main.pack(side=tk.LEFT)
+
+        self.current_faint = tk.Label(current_frame, text="0", font=("Arial", 24, "bold"),
+                                       fg="#FF8080", bg=display_frame.cget('background'))  # Helles Rot
+        self.current_faint.pack(side=tk.LEFT)
+
+        self.current_unit = tk.Label(current_frame, text=" A", font=("Arial", 24, "bold"),
+                                      fg="red", bg=display_frame.cget('background'))
+        self.current_unit.pack(side=tk.LEFT)
 
         ttk.Label(display_frame, text="Strom").grid(row=3, column=0, pady=(0, 15))
 
+        # Leistung - alle 3 Nachkommastellen, da berechnet
         self.power_display = ttk.Label(display_frame, text="0.000 W",
                                         font=("Arial", 20), foreground="green")
         self.power_display.grid(row=4, column=0, pady=(10, 5))
 
         ttk.Label(display_frame, text="Leistung").grid(row=5, column=0, pady=(0, 15))
 
-        # Status-Informationen
+        # Status-Informationen (nur Modus und Übertemperatur, Rest ist bei Buttons)
         ttk.Separator(display_frame, orient=tk.HORIZONTAL).grid(row=6, column=0, sticky=(tk.W, tk.E), pady=10)
 
         self.mode_label = ttk.Label(display_frame, text="Modus: --", font=("Arial", 10))
         self.mode_label.grid(row=7, column=0, sticky=tk.W, pady=2)
 
-        self.output_status_label = ttk.Label(display_frame, text="Ausgang: --", font=("Arial", 10))
-        self.output_status_label.grid(row=8, column=0, sticky=tk.W, pady=2)
-
-        self.remote_status_label = ttk.Label(display_frame, text="Remote: --", font=("Arial", 10))
-        self.remote_status_label.grid(row=9, column=0, sticky=tk.W, pady=2)
-
         self.temp_label = ttk.Label(display_frame, text="Übertemperatur: --", font=("Arial", 10))
-        self.temp_label.grid(row=10, column=0, sticky=tk.W, pady=2)
+        self.temp_label.grid(row=8, column=0, sticky=tk.W, pady=2)
 
         # ===== Graph-Bereich =====
         graph_frame = ttk.LabelFrame(main_frame, text="Live-Messdaten", padding="10")
         graph_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
 
-        # Matplotlib Figure erstellen
+        # Matplotlib Figure erstellen mit mehr Platz für Beschriftungen
         self.fig = Figure(figsize=(10, 5), dpi=100)
 
-        # Zwei Subplots: Spannung/Strom und Leistung
+        # Subplots mit mehr Abstand erstellen
         self.ax1 = self.fig.add_subplot(211)
         self.ax2 = self.fig.add_subplot(212)
 
         # Spannung/Strom Plot
         self.line_voltage, = self.ax1.plot([], [], 'b-', label='Spannung (V)', linewidth=2)
         self.line_current, = self.ax1.plot([], [], 'r-', label='Strom (A)', linewidth=2)
-        self.ax1.set_ylabel('Spannung (V) / Strom (A)')
-        self.ax1.legend(loc='upper left')
+        self.ax1.set_ylabel('Spannung (V) / Strom (A)', fontsize=10)
+        self.ax1.legend(loc='upper left', fontsize=9)
         self.ax1.grid(True, alpha=0.3)
+        self.ax1.tick_params(axis='both', labelsize=9)
 
         # Leistungs-Plot
         self.line_power, = self.ax2.plot([], [], 'g-', label='Leistung (W)', linewidth=2)
-        self.ax2.set_xlabel('Zeit (s)')
-        self.ax2.set_ylabel('Leistung (W)')
-        self.ax2.legend(loc='upper left')
+        self.ax2.set_xlabel('Zeit (s)', fontsize=10)
+        self.ax2.set_ylabel('Leistung (W)', fontsize=10)
+        self.ax2.legend(loc='upper left', fontsize=9)
         self.ax2.grid(True, alpha=0.3)
+        self.ax2.tick_params(axis='both', labelsize=9)
 
-        self.fig.tight_layout()
+        # Tight layout mit padding für bessere Beschriftungen
+        self.fig.tight_layout(pad=2.0, h_pad=2.0)
 
         # Canvas für Matplotlib
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
@@ -219,8 +287,9 @@ class PowerSupplyGUI:
                 # Monitoring starten
                 self._start_monitoring()
 
-                messagebox.showinfo("Erfolg", f"Verbunden mit {port}")
+                # Kein Popup - Status-Label zeigt bereits "Verbunden"
             else:
+                # Nur bei Fehler Meldung zeigen
                 messagebox.showerror("Fehler", f"Verbindung zu {port} fehlgeschlagen")
         else:
             # Trennen
@@ -286,16 +355,27 @@ class PowerSupplyGUI:
         if hasattr(self, 'last_status') and self.last_status:
             status = self.last_status
 
-            # Anzeigen aktualisieren
-            self.voltage_display.config(text=f"{status['actual_voltage']:.3f} V")
-            self.current_display.config(text=f"{status['actual_current']:.3f} A")
-            power = status['actual_voltage'] * status['actual_current']
+            # Anzeigen aktualisieren mit geteilter Formatierung
+            # Spannung: XX.XX in voller Farbe, letzte Stelle gedimmt
+            voltage = status['actual_voltage']
+            voltage_main = f"{voltage:.2f}"  # z.B. "5.00"
+            voltage_last = str(int((voltage * 1000) % 10))  # Letzte Stelle
+            self.voltage_main.config(text=voltage_main)
+            self.voltage_faint.config(text=voltage_last)
+
+            # Strom: X.XX in voller Farbe, letzte Stelle gedimmt
+            current = status['actual_current']
+            current_main = f"{current:.2f}"  # z.B. "1.23"
+            current_last = str(int((current * 1000) % 10))  # Letzte Stelle
+            self.current_main.config(text=current_main)
+            self.current_faint.config(text=current_last)
+
+            # Leistung: Alle 3 Nachkommastellen (berechnet, kein direkter Messwert)
+            power = voltage * current
             self.power_display.config(text=f"{power:.3f} W")
 
-            # Status-Labels aktualisieren
+            # Status-Labels aktualisieren (rechte Seite - nur Modus und Temp)
             self.mode_label.config(text=f"Modus: {status['mode']}")
-            self.output_status_label.config(text=f"Ausgang: {'EIN' if status['output_on'] else 'AUS'}")
-            self.remote_status_label.config(text=f"Remote: {'Ja' if status['remote_mode'] else 'Nein'}")
             self.temp_label.config(text=f"Übertemperatur: {'WARNUNG!' if status['over_temp'] else 'OK'}")
 
             if status['over_temp']:
@@ -303,16 +383,20 @@ class PowerSupplyGUI:
             else:
                 self.temp_label.config(foreground="black")
 
-            # Buttons aktualisieren
+            # Buttons und zugehörige Status-Labels aktualisieren (linke Seite)
             if status['output_on']:
                 self.output_btn.config(text="Ausgang AUS")
+                self.output_status_label.config(text="Status: EIN", foreground="green")
             else:
                 self.output_btn.config(text="Ausgang EIN")
+                self.output_status_label.config(text="Status: AUS", foreground="gray")
 
             if status['remote_mode']:
                 self.remote_btn.config(text="Remote-Modus AUS")
+                self.remote_status_label.config(text="Status: Aktiv", foreground="green")
             else:
                 self.remote_btn.config(text="Remote-Modus EIN")
+                self.remote_status_label.config(text="Status: Inaktiv", foreground="gray")
 
         # Graphen aktualisieren
         if len(self.timestamps) > 0:
@@ -346,19 +430,23 @@ class PowerSupplyGUI:
                 p_max = max(powers) if max(powers) > 0 else 1
                 self.ax2.set_ylim(0, p_max * 1.1)
 
+        # Layout anpassen damit Beschriftungen nicht abgeschnitten werden
+        try:
+            self.fig.tight_layout(pad=2.0, h_pad=2.0)
+        except:
+            pass  # Falls tight_layout fehlschlägt, einfach ignorieren
+
         self.canvas.draw_idle()
 
     def _set_voltage(self):
         """Setzt die Ausgangsspannung"""
         if not self.connected:
-            messagebox.showwarning("Warnung", "Nicht verbunden!")
             return
 
         try:
             voltage = self.voltage_var.get()
-            if self.psu.set_voltage(voltage):
-                messagebox.showinfo("Erfolg", f"Spannung auf {voltage:.2f}V gesetzt")
-            else:
+            if not self.psu.set_voltage(voltage):
+                # Nur bei Fehler Meldung zeigen
                 messagebox.showerror("Fehler", "Spannung konnte nicht gesetzt werden")
         except ValueError as e:
             messagebox.showerror("Fehler", str(e))
@@ -366,14 +454,12 @@ class PowerSupplyGUI:
     def _set_current(self):
         """Setzt die Strombegrenzung"""
         if not self.connected:
-            messagebox.showwarning("Warnung", "Nicht verbunden!")
             return
 
         try:
             current = self.current_var.get()
-            if self.psu.set_current(current):
-                messagebox.showinfo("Erfolg", f"Strombegrenzung auf {current:.2f}A gesetzt")
-            else:
+            if not self.psu.set_current(current):
+                # Nur bei Fehler Meldung zeigen
                 messagebox.showerror("Fehler", "Strom konnte nicht gesetzt werden")
         except ValueError as e:
             messagebox.showerror("Fehler", str(e))
@@ -386,10 +472,8 @@ class PowerSupplyGUI:
         current_state = self.last_status.get('output_on', False)
         new_state = not current_state
 
-        if self.psu.set_output(new_state):
-            state_text = "eingeschaltet" if new_state else "ausgeschaltet"
-            messagebox.showinfo("Erfolg", f"Ausgang {state_text}")
-        else:
+        if not self.psu.set_output(new_state):
+            # Nur bei Fehler Meldung zeigen
             messagebox.showerror("Fehler", "Ausgang konnte nicht geschaltet werden")
 
     def _toggle_remote(self):
@@ -400,16 +484,57 @@ class PowerSupplyGUI:
         current_state = self.last_status.get('remote_mode', False)
         new_state = not current_state
 
-        if self.psu.set_remote_mode(new_state):
-            state_text = "aktiviert" if new_state else "deaktiviert"
-            messagebox.showinfo("Erfolg", f"Remote-Modus {state_text}")
-        else:
+        if not self.psu.set_remote_mode(new_state):
+            # Nur bei Fehler Meldung zeigen
             messagebox.showerror("Fehler", "Remote-Modus konnte nicht geschaltet werden")
+
+    def _get_available_ports(self):
+        """Ermittelt alle verfügbaren COM-Ports"""
+        ports = serial.tools.list_ports.comports()
+        port_list = [port.device for port in ports]
+        return port_list if port_list else ['COM3']  # Fallback wenn keine Ports gefunden
+
+    def _refresh_ports(self):
+        """Aktualisiert die Liste der verfügbaren COM-Ports"""
+        available_ports = self._get_available_ports()
+        self.port_combo['values'] = available_ports
+
+        # Wenn aktueller Port nicht mehr verfügbar, ersten nehmen
+        if self.port_var.get() not in available_ports and available_ports:
+            self.port_var.set(available_ports[0])
+
+    def _load_settings(self):
+        """Lädt die letzten Verbindungseinstellungen"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Fehler beim Laden der Einstellungen: {e}")
+
+        # Defaults wenn Datei nicht existiert oder Fehler
+        return {'port': 'COM3', 'baudrate': '4800'}
+
+    def _save_settings(self):
+        """Speichert die aktuellen Verbindungseinstellungen"""
+        try:
+            settings = {
+                'port': self.port_var.get(),
+                'baudrate': self.baudrate_var.get()
+            }
+            with open(self.config_file, 'w') as f:
+                json.dump(settings, f, indent=2)
+        except Exception as e:
+            print(f"Fehler beim Speichern der Einstellungen: {e}")
 
     def on_closing(self):
         """Wird beim Schließen des Fensters aufgerufen"""
+        # Einstellungen speichern
+        self._save_settings()
+
         if self.connected:
             self._toggle_connection()
+
         self.root.destroy()
 
 
