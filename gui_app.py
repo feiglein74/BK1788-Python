@@ -41,6 +41,7 @@ class PowerSupplyGUI:
         self.voltage_data = deque(maxlen=self.max_points)
         self.current_data = deque(maxlen=self.max_points)
         self.power_data = deque(maxlen=self.max_points)
+        self.mode_data = deque(maxlen=self.max_points)  # Modus für Farbcodierung
 
         # Config-Datei für Einstellungen
         self.config_file = os.path.join(os.path.dirname(__file__), 'gui_config.json')
@@ -120,11 +121,12 @@ class PowerSupplyGUI:
         voltage_frame = ttk.Frame(control_frame)
         voltage_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
 
-        self.voltage_var = tk.DoubleVar()
+        self.voltage_var = tk.StringVar()  # StringVar statt DoubleVar für Komma-Unterstützung
         voltage_spinbox = ttk.Spinbox(voltage_frame, from_=0, to=32, increment=0.01,
                                        textvariable=self.voltage_var, width=10, format="%.2f")
         voltage_spinbox.grid(row=0, column=0, padx=(0, 10))
         voltage_spinbox.set("5.00")  # Startwert mit 2 Nachkommastellen
+        voltage_spinbox.bind('<Return>', lambda e: self._set_voltage())  # Enter-Taste
 
         ttk.Button(voltage_frame, text="Setzen", command=self._set_voltage).grid(row=0, column=1)
 
@@ -135,11 +137,12 @@ class PowerSupplyGUI:
         current_frame = ttk.Frame(control_frame)
         current_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
 
-        self.current_var = tk.DoubleVar()
+        self.current_var = tk.StringVar()  # StringVar statt DoubleVar für Komma-Unterstützung
         current_spinbox = ttk.Spinbox(current_frame, from_=0, to=6, increment=0.01,
                                        textvariable=self.current_var, width=10, format="%.2f")
         current_spinbox.grid(row=0, column=0, padx=(0, 10))
         current_spinbox.set("1.00")  # Startwert mit 2 Nachkommastellen
+        current_spinbox.bind('<Return>', lambda e: self._set_current())  # Enter-Taste
 
         ttk.Button(current_frame, text="Setzen", command=self._set_current).grid(row=0, column=1)
 
@@ -229,15 +232,34 @@ class PowerSupplyGUI:
         self.ax1 = self.fig.add_subplot(211)
         self.ax2 = self.fig.add_subplot(212)
 
-        # Spannung/Strom Plot
-        self.line_voltage, = self.ax1.plot([], [], 'b-', label='Spannung (V)', linewidth=2)
-        self.line_current, = self.ax1.plot([], [], 'r-', label='Strom (A)', linewidth=2)
-        self.ax1.set_ylabel('Spannung (V) / Strom (A)', fontsize=10)
-        self.ax1.legend(loc='upper left', fontsize=9)
+        # Spannung/Strom Plot mit zwei Y-Achsen
+        # Linke Y-Achse: Spannung (0-32V)
+        self.ax1.set_ylabel('Spannung (V)', fontsize=10, color='blue')
+        self.ax1.tick_params(axis='y', labelcolor='blue', labelsize=9)
+        self.ax1.set_xlim(0, 10)
+        self.ax1.set_ylim(0, 32)  # Max. 32V
         self.ax1.grid(True, alpha=0.3)
-        self.ax1.tick_params(axis='both', labelsize=9)
-        self.ax1.set_xlim(0, 10)  # Initiale Achsenlimits
-        self.ax1.set_ylim(0, 10)
+
+        # Rechte Y-Achse: Strom (0-6A)
+        self.ax1_right = self.ax1.twinx()
+        self.ax1_right.set_ylabel('Strom (A)', fontsize=10, color='red')
+        self.ax1_right.tick_params(axis='y', labelcolor='red', labelsize=9)
+        self.ax1_right.set_ylim(0, 6)  # Max. 6A
+
+        # Stromlinie auf rechter Y-Achse
+        self.line_current, = self.ax1_right.plot([], [], 'r-', linewidth=2)
+
+        # Legende für Spannungs-Modi (oben links)
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], color='blue', linewidth=2, label='Spannung (CV)'),
+            Line2D([0], [0], color='orange', linewidth=2, label='Spannung (CC)'),
+            Line2D([0], [0], color='red', linewidth=2, label='Strom (A)')
+        ]
+        self.ax1.legend(handles=legend_elements, loc='upper left', fontsize=9)
+
+        # Collection für Spannungs-Segmente (wird dynamisch gefüllt)
+        self.voltage_segments = []
 
         # Leistungs-Plot
         self.line_power, = self.ax2.plot([], [], 'g-', label='Leistung (W)', linewidth=2)
@@ -301,9 +323,9 @@ class PowerSupplyGUI:
                         status = self.psu.read_status()
 
                     if status:
-                        # Sollwerte vom Netzteil in GUI übernehmen
-                        self.voltage_var.set(status['voltage_setpoint'])
-                        self.current_var.set(status['current_setpoint'])
+                        # Sollwerte vom Netzteil in GUI übernehmen (formatiert mit 2 Nachkommastellen)
+                        self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
+                        self.current_var.set(f"{status['current_setpoint']:.2f}")
 
                 # Monitoring starten
                 self._start_monitoring()
@@ -361,6 +383,7 @@ class PowerSupplyGUI:
                     self.voltage_data.append(status['actual_voltage'])
                     self.current_data.append(status['actual_current'])
                     self.power_data.append(status['actual_voltage'] * status['actual_current'])
+                    self.mode_data.append(status['mode'])  # Modus speichern für Farbcodierung
 
                     # Status zwischenspeichern für GUI-Update
                     self.last_status = status
@@ -432,8 +455,8 @@ class PowerSupplyGUI:
                 self.remote_btn.config(text="⬤ Inaktiv")
                 # Remote-Modus aus: Sollwerte vom Netzteil nachführen
                 # (könnte am Frontpanel geändert worden sein)
-                self.voltage_var.set(status['voltage_setpoint'])
-                self.current_var.set(status['current_setpoint'])
+                self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
+                self.current_var.set(f"{status['current_setpoint']:.2f}")
 
         # Graphen aktualisieren
         if len(self.timestamps) > 0:
@@ -445,9 +468,49 @@ class PowerSupplyGUI:
         voltages = list(self.voltage_data)
         currents = list(self.current_data)
         powers = list(self.power_data)
+        modes = list(self.mode_data)
 
-        # Spannung/Strom Plot aktualisieren
-        self.line_voltage.set_data(times, voltages)
+        # Alte Spannungs-Segmente entfernen
+        for segment in self.voltage_segments:
+            segment.remove()
+        self.voltage_segments.clear()
+
+        # Spannungs-Segmente nach Modus gruppieren und einfärben
+        if len(times) > 1 and len(modes) > 0:
+            i = 0
+            while i < len(times):
+                # Segment-Start finden
+                start_idx = i
+                current_mode = modes[i] if i < len(modes) else 'CV'
+
+                # Solange gleicher Modus, Segment erweitern
+                while i < len(times) - 1 and i + 1 < len(modes) and modes[i + 1] == current_mode:
+                    i += 1
+
+                # Segment-Ende: i+1 für Überlappung mit nächstem Segment
+                # Aber nicht über das Ende hinaus
+                end_idx = min(i + 2, len(times))
+
+                # Farbe basierend auf Modus
+                if current_mode == 'CC':
+                    color = 'orange'
+                elif current_mode == 'CV':
+                    color = 'blue'
+                else:
+                    color = 'gray'
+
+                # Segment zeichnen (mit einem Punkt Überlappung)
+                segment, = self.ax1.plot(
+                    times[start_idx:end_idx],
+                    voltages[start_idx:end_idx],
+                    color=color,
+                    linewidth=2
+                )
+                self.voltage_segments.append(segment)
+
+                i += 1
+
+        # Strom Plot aktualisieren (bleibt immer rot)
         self.line_current.set_data(times, currents)
 
         # Leistungs-Plot aktualisieren
@@ -460,11 +523,17 @@ class PowerSupplyGUI:
             self.ax1.set_xlim(min(times), max(times))
             self.ax2.set_xlim(min(times), max(times))
 
+            # Spannung Y-Achse (links)
             if len(voltages) > 0:
                 v_max = max(voltages) if max(voltages) > 0 else 1
-                c_max = max(currents) if max(currents) > 0 else 1
-                self.ax1.set_ylim(0, max(v_max, c_max) * 1.1)
+                self.ax1.set_ylim(0, min(v_max * 1.1, 32))  # Max. 32V
 
+            # Strom Y-Achse (rechts)
+            if len(currents) > 0:
+                c_max = max(currents) if max(currents) > 0 else 1
+                self.ax1_right.set_ylim(0, min(c_max * 1.1, 6))  # Max. 6A
+
+            # Leistung Y-Achse
             if len(powers) > 0:
                 p_max = max(powers) if max(powers) > 0 else 1
                 self.ax2.set_ylim(0, p_max * 1.1)
@@ -478,12 +547,15 @@ class PowerSupplyGUI:
             return
 
         try:
-            voltage = self.voltage_var.get()
+            # Komma in Punkt umwandeln (deutsche Tastatur)
+            voltage_str = self.voltage_var.get().replace(',', '.')
+            voltage = float(voltage_str)
+
             if not self.psu.set_voltage(voltage):
                 # Nur bei Fehler Meldung zeigen
                 messagebox.showerror("Fehler", "Spannung konnte nicht gesetzt werden")
         except ValueError as e:
-            messagebox.showerror("Fehler", str(e))
+            messagebox.showerror("Fehler", f"Ungültiger Wert: {e}")
 
     def _set_current(self):
         """Setzt die Strombegrenzung"""
@@ -491,12 +563,15 @@ class PowerSupplyGUI:
             return
 
         try:
-            current = self.current_var.get()
+            # Komma in Punkt umwandeln (deutsche Tastatur)
+            current_str = self.current_var.get().replace(',', '.')
+            current = float(current_str)
+
             if not self.psu.set_current(current):
                 # Nur bei Fehler Meldung zeigen
                 messagebox.showerror("Fehler", "Strom konnte nicht gesetzt werden")
         except ValueError as e:
-            messagebox.showerror("Fehler", str(e))
+            messagebox.showerror("Fehler", f"Ungültiger Wert: {e}")
 
     def _toggle_output(self):
         """Schaltet den Ausgang ein/aus"""
@@ -521,8 +596,13 @@ class PowerSupplyGUI:
         if self.psu.set_remote_mode(new_state):
             # Wenn Remote-Modus aktiviert wird: GUI-Werte ans Netzteil senden
             if new_state:
-                self.psu.set_voltage(self.voltage_var.get())
-                self.psu.set_current(self.current_var.get())
+                try:
+                    voltage = float(self.voltage_var.get().replace(',', '.'))
+                    current = float(self.current_var.get().replace(',', '.'))
+                    self.psu.set_voltage(voltage)
+                    self.psu.set_current(current)
+                except ValueError:
+                    pass  # Ungültige Werte ignorieren
         else:
             # Nur bei Fehler Meldung zeigen
             messagebox.showerror("Fehler", "Remote-Modus konnte nicht geschaltet werden")
