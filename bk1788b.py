@@ -8,6 +8,11 @@ import time
 import threading
 from typing import Dict, Optional, Tuple
 
+try:
+    from __version__ import __version__
+except ImportError:
+    __version__ = "unknown"
+
 
 class BK1788B:
     """

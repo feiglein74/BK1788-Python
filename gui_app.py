@@ -19,13 +19,18 @@ from datetime import datetime
 from bk1788b import BK1788B
 import serial.tools.list_ports
 
+try:
+    from __version__ import __version__
+except ImportError:
+    __version__ = "unknown"
+
 
 class PowerSupplyGUI:
     """Hauptfenster für die Netzteil-Steuerung"""
 
     def __init__(self, root):
         self.root = root
-        self.root.title("BK Precision 1788B Steuerung")
+        self.root.title(f"BK Precision 1788B Steuerung v{__version__}")
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
 
