@@ -212,7 +212,7 @@ class PowerSupplyGUI:
 
         ttk.Label(display_frame, text="Leistung").grid(row=5, column=0, pady=(0, 15))
 
-        # Status-Informationen (nur Modus und Übertemperatur, Rest ist bei Buttons)
+        # Status-Informationen
         ttk.Separator(display_frame, orient=tk.HORIZONTAL).grid(row=6, column=0, sticky=(tk.W, tk.E), pady=10)
 
         self.mode_label = ttk.Label(display_frame, text="Modus: --", font=("Arial", 10))
@@ -220,6 +220,12 @@ class PowerSupplyGUI:
 
         self.temp_label = ttk.Label(display_frame, text="Übertemperatur: --", font=("Arial", 10))
         self.temp_label.grid(row=8, column=0, sticky=tk.W, pady=2)
+
+        self.fan_label = ttk.Label(display_frame, text="Lüfter: --", font=("Arial", 10))
+        self.fan_label.grid(row=9, column=0, sticky=tk.W, pady=2)
+
+        self.max_voltage_label = ttk.Label(display_frame, text="Max. Spannung: --", font=("Arial", 10))
+        self.max_voltage_label.grid(row=10, column=0, sticky=tk.W, pady=2)
 
         # ===== Graph-Bereich =====
         graph_frame = ttk.LabelFrame(main_frame, text="Live-Messdaten", padding="10")
@@ -273,7 +279,7 @@ class PowerSupplyGUI:
 
         # Tight layout mit mehr Platz für Beschriftungen
         # left/right/top/bottom definieren die Ränder für Beschriftungen
-        self.fig.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.08, hspace=0.25)
+        self.fig.subplots_adjust(left=0.08, right=0.92, top=0.96, bottom=0.08, hspace=0.25)
 
         # Canvas für Matplotlib
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
@@ -365,9 +371,10 @@ class PowerSupplyGUI:
     def _stop_monitoring(self):
         """Stoppt den Monitoring-Thread"""
         self.monitoring = False
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=2)
-            self.monitor_thread = None
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=1.0)  # Kürzerer Timeout
+            # Wenn Thread nicht beendet, einfach weitermachen (daemon=True killt ihn automatisch)
+        self.monitor_thread = None
 
     def _monitor_loop(self):
         """Monitoring-Schleife (läuft in separatem Thread)"""
@@ -442,6 +449,16 @@ class PowerSupplyGUI:
                 self.temp_label.config(foreground="red")
             else:
                 self.temp_label.config(foreground="black")
+
+            # Lüfter-Geschwindigkeit (0-5: 0=Aus, 5=Maximum)
+            fan_speed = status['fan_speed']
+            if fan_speed == 0:
+                self.fan_label.config(text="Lüfter: Aus", foreground="gray")
+            else:
+                self.fan_label.config(text=f"Lüfter: Stufe {fan_speed}/5", foreground="green")
+
+            # Maximale Spannung
+            self.max_voltage_label.config(text=f"Max. Spannung: {status['max_voltage']:.1f}V", foreground="black")
 
             # Button-Status aktualisieren (Button zeigt aktuellen Zustand)
             if status['output_on']:
@@ -724,11 +741,15 @@ class PowerSupplyGUI:
     def on_closing(self):
         """Wird beim Schließen des Fensters aufgerufen"""
         # Einstellungen speichern
-        self._save_settings()
+        try:
+            self._save_settings()
+        except:
+            pass
 
         if self.connected:
-            # Monitoring stoppen
-            self._stop_monitoring()
+            # Monitoring stoppen (non-blocking)
+            self.monitoring = False
+            self.connected = False
 
             # Remote-Modus ausschalten damit Frontpanel wieder bedienbar ist
             if self.psu:
@@ -737,9 +758,16 @@ class PowerSupplyGUI:
                 except:
                     pass  # Ignorieren falls Kommunikation schon unterbrochen
 
-                self.psu.disconnect()
+                try:
+                    self.psu.disconnect()
+                except:
+                    pass
 
-        self.root.destroy()
+        # Thread wird automatisch beendet (daemon=True)
+        try:
+            self.root.destroy()
+        except:
+            pass
 
 
 def main():

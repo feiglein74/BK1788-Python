@@ -69,11 +69,12 @@ BK1788-Python/
     'actual_current': float,      # Aktueller Strom in A
     'voltage_setpoint': float,    # Spannungs-Sollwert
     'current_setpoint': float,    # Strom-Sollwert
+    'max_voltage': float,         # Maximale Spannung des Geräts (32V)
     'output_on': bool,            # Ausgang aktiv
     'mode': str,                  # 'CV', 'CC', 'Unreg', 'Unknown'
     'remote_mode': bool,          # Remote-Steuerung aktiv
     'over_temp': bool,            # Übertemperatur-Schutz
-    'fan_speed': int              # 0-5
+    'fan_speed': int              # Lüftergeschwindigkeit (0=Aus, 1-4=Variable, 5=Maximum)
 }
 ```
 

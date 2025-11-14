@@ -58,3 +58,6 @@ Thumbs.db
 
 # GUI Config (persönliche Einstellungen)
 gui_config.json
+
+# Claude Code lokale Einstellungen
+.claude/settings.local.json

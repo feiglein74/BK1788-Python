@@ -266,6 +266,7 @@ class BK1788B:
             - actual_current: Aktueller Ausgangsstrom (A)
             - voltage_setpoint: Spannungs-Sollwert (V)
             - current_setpoint: Strom-Sollwert (A)
+            - max_voltage: Maximale Spannung des Geräts (V)
             - output_on: Ausgang aktiv (bool)
             - mode: Betriebsmodus ('CV', 'CC', 'Unreg', 'Unknown')
             - remote_mode: Remote-Steuerung aktiv (bool)
@@ -283,6 +284,7 @@ class BK1788B:
         actual_voltage_mv = response[5] | (response[6] << 8) | (response[7] << 16) | (response[8] << 24)
         status_byte = response[9]
         current_setpoint_ma = response[10] | (response[11] << 8)
+        max_voltage_mv = response[12] | (response[13] << 8) | (response[14] << 16) | (response[15] << 24)
         voltage_setpoint_mv = response[16] | (response[17] << 8) | (response[18] << 16) | (response[19] << 24)
 
         # Status-Byte dekodieren
@@ -299,6 +301,7 @@ class BK1788B:
             'actual_current': actual_current_ma / 1000.0,
             'voltage_setpoint': voltage_setpoint_mv / 1000.0,
             'current_setpoint': current_setpoint_ma / 1000.0,
+            'max_voltage': max_voltage_mv / 1000.0,
             'output_on': output_on,
             'mode': mode_names[mode],
             'remote_mode': remote_mode,
