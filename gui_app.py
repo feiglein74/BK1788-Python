@@ -629,8 +629,15 @@ class PowerSupplyGUI:
         # (d.h. Benutzer hat nicht gezoomt/gepanned)
         if len(times) > 0 and self.toolbar.mode == '':
             # Auto-Skalierung nur wenn nicht manuell gezoomt
-            self.ax1.set_xlim(min(times), max(times))
-            self.ax2.set_xlim(min(times), max(times))
+            # Warnung vermeiden wenn nur 1 Datenpunkt (min == max)
+            t_min, t_max = min(times), max(times)
+            if t_min != t_max:
+                self.ax1.set_xlim(t_min, t_max)
+                self.ax2.set_xlim(t_min, t_max)
+            else:
+                # Nur 1 Datenpunkt: Kleine Fenster um den Punkt
+                self.ax1.set_xlim(t_min - 1, t_max + 1)
+                self.ax2.set_xlim(t_min - 1, t_max + 1)
 
             # Spannung Y-Achse (links)
             if len(voltages) > 0:
