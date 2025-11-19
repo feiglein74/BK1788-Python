@@ -40,6 +40,19 @@ class PowerSupplyGUI:
         self.monitoring = False
         self.monitor_thread = None
 
+        # Thread-Synchronisation für serielle Kommunikation
+        self.comm_lock = threading.Lock()
+        self.force_gui_sync = False  # Flag für Force-Update nach Set-Operationen
+
+        # Focus-Tracking: Verhindert Überschreiben während User tippt
+        self.voltage_has_focus = False
+        self.current_has_focus = False
+        self.voltage_focus_timer = None  # Delay-Timer für FocusOut
+        self.current_focus_timer = None
+
+        # Set-Protection: Verhindert Überschreiben während Set-Operation
+        self.setting_in_progress = False
+
         # Daten für Graphen (max. 500 Datenpunkte)
         self.max_points = 500
         self.timestamps = deque(maxlen=self.max_points)
@@ -132,6 +145,8 @@ class PowerSupplyGUI:
         self.voltage_spinbox.grid(row=0, column=0, padx=(0, 10))
         self.voltage_spinbox.set("5.00")  # Startwert mit 2 Nachkommastellen
         self.voltage_spinbox.bind('<Return>', lambda e: self._set_voltage())  # Enter-Taste
+        self.voltage_spinbox.bind('<FocusIn>', lambda e: self._voltage_focus_in())
+        self.voltage_spinbox.bind('<FocusOut>', lambda e: self._voltage_focus_out())
 
         ttk.Button(voltage_frame, text="Setzen", command=self._set_voltage).grid(row=0, column=1)
 
@@ -148,6 +163,8 @@ class PowerSupplyGUI:
         self.current_spinbox.grid(row=0, column=0, padx=(0, 10))
         self.current_spinbox.set("1.00")  # Startwert mit 2 Nachkommastellen
         self.current_spinbox.bind('<Return>', lambda e: self._set_current())  # Enter-Taste
+        self.current_spinbox.bind('<FocusIn>', lambda e: self._current_focus_in())
+        self.current_spinbox.bind('<FocusOut>', lambda e: self._current_focus_out())
 
         ttk.Button(current_frame, text="Setzen", command=self._set_current).grid(row=0, column=1)
 
@@ -300,6 +317,40 @@ class PowerSupplyGUI:
         # Startzeit für relative Zeitachse
         self.start_time = None
 
+    def _voltage_focus_in(self):
+        """Spannung-Spinbox hat Focus erhalten"""
+        # Timer canceln falls gerade läuft
+        if self.voltage_focus_timer:
+            self.root.after_cancel(self.voltage_focus_timer)
+            self.voltage_focus_timer = None
+        # Sofort Focus setzen
+        self.voltage_has_focus = True
+
+    def _voltage_focus_out(self):
+        """Spannung-Spinbox hat Focus verloren - mit Delay"""
+        # Focus erst nach 200ms als verloren markieren
+        # Gibt Button-Click Zeit, setting_in_progress zu setzen
+        if self.voltage_focus_timer:
+            self.root.after_cancel(self.voltage_focus_timer)
+        self.voltage_focus_timer = self.root.after(200, lambda: setattr(self, 'voltage_has_focus', False))
+
+    def _current_focus_in(self):
+        """Strom-Spinbox hat Focus erhalten"""
+        # Timer canceln falls gerade läuft
+        if self.current_focus_timer:
+            self.root.after_cancel(self.current_focus_timer)
+            self.current_focus_timer = None
+        # Sofort Focus setzen
+        self.current_has_focus = True
+
+    def _current_focus_out(self):
+        """Strom-Spinbox hat Focus verloren - mit Delay"""
+        # Focus erst nach 200ms als verloren markieren
+        # Gibt Button-Click Zeit, setting_in_progress zu setzen
+        if self.current_focus_timer:
+            self.root.after_cancel(self.current_focus_timer)
+        self.current_focus_timer = self.root.after(200, lambda: setattr(self, 'current_has_focus', False))
+
     def _toggle_connection(self):
         """Verbindung herstellen/trennen"""
         if not self.connected:
@@ -325,18 +376,20 @@ class PowerSupplyGUI:
 
                 # Status lesen und Remote-Modus ausschalten falls noch aktiv
                 # (könnte von vorherigem Programmlauf noch gesperrt sein)
-                status = self.psu.read_status()
-                if status:
-                    if status['remote_mode']:
-                        # Netzteil entsperren
-                        self.psu.set_remote_mode(False)
-                        # Nochmal Status lesen für aktuelle Sollwerte
-                        status = self.psu.read_status()
-
+                # Nutzt Lock obwohl Monitoring noch nicht läuft (für Konsistenz)
+                with self.comm_lock:
+                    status = self.psu.read_status()
                     if status:
-                        # Sollwerte vom Netzteil in GUI übernehmen (formatiert mit 2 Nachkommastellen)
-                        self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
-                        self.current_var.set(f"{status['current_setpoint']:.2f}")
+                        if status['remote_mode']:
+                            # Netzteil entsperren
+                            self.psu.set_remote_mode(False)
+                            # Nochmal Status lesen für aktuelle Sollwerte
+                            status = self.psu.read_status()
+
+                        if status:
+                            # Sollwerte vom Netzteil in GUI übernehmen (formatiert mit 2 Nachkommastellen)
+                            self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
+                            self.current_var.set(f"{status['current_setpoint']:.2f}")
 
                 # Monitoring starten
                 self._start_monitoring()
@@ -351,8 +404,10 @@ class PowerSupplyGUI:
 
             if self.psu:
                 # Remote-Modus ausschalten damit Frontpanel wieder bedienbar ist
+                # Lock nutzen falls Monitor-Thread gerade noch läuft
                 try:
-                    self.psu.set_remote_mode(False)
+                    with self.comm_lock:
+                        self.psu.set_remote_mode(False)
                 except:
                     pass  # Ignorieren falls Kommunikation schon unterbrochen
 
@@ -385,7 +440,10 @@ class PowerSupplyGUI:
         """Monitoring-Schleife (läuft in separatem Thread)"""
         while self.monitoring and self.connected:
             try:
-                status = self.psu.read_status()
+                # Serielle Kommunikation mit Lock schützen
+                with self.comm_lock:
+                    status = self.psu.read_status()
+
                 if status:
                     # Zeitstempel hinzufügen
                     current_time = time.time() - self.start_time
@@ -475,27 +533,39 @@ class PowerSupplyGUI:
                 self.remote_btn.config(text="● Aktiv")
             else:
                 self.remote_btn.config(text="⬤ Inaktiv")
-                # Remote-Modus aus: Nur aktualisieren wenn Netzteil-Sollwert sich geändert hat
-                # (Änderung am Frontpanel) - sonst GUI-Änderungen nicht überschreiben
-                try:
-                    current_gui_voltage = float(self.voltage_var.get().replace(',', '.'))
-                    netzteil_voltage = status['voltage_setpoint']
-                    # Nur aktualisieren wenn Differenz > 0.01V (verhindert Rundungsfehler)
-                    if abs(current_gui_voltage - netzteil_voltage) > 0.01:
-                        self.voltage_var.set(f"{netzteil_voltage:.2f}")
-                except (ValueError, AttributeError):
-                    # Ungültiger Wert in GUI - überschreiben mit Netzteil-Wert
-                    self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
 
-                try:
-                    current_gui_current = float(self.current_var.get().replace(',', '.'))
-                    netzteil_current = status['current_setpoint']
-                    # Nur aktualisieren wenn Differenz > 0.01A
-                    if abs(current_gui_current - netzteil_current) > 0.01:
-                        self.current_var.set(f"{netzteil_current:.2f}")
-                except (ValueError, AttributeError):
-                    # Ungültiger Wert in GUI - überschreiben mit Netzteil-Wert
-                    self.current_var.set(f"{status['current_setpoint']:.2f}")
+            # Sollwerte-Synchronisation: Remote-Modus aus ODER Force-Sync nach Set-Operation
+            if not status['remote_mode'] or self.force_gui_sync:
+                # Force-Sync: Immer aktualisieren (nach Set-Operation)
+                # Normal-Sync: Nur wenn Differenz > 0.01 (Frontpanel-Änderung erkannt)
+                # ABER: Nicht überschreiben wenn User gerade tippt ODER gerade "Setzen" geklickt hat
+
+                # Spannung: Nur aktualisieren wenn KEIN Focus UND NICHT setting (außer Force-Sync)
+                if (not self.voltage_has_focus and not self.setting_in_progress) or self.force_gui_sync:
+                    try:
+                        current_gui_voltage = float(self.voltage_var.get().replace(',', '.'))
+                        netzteil_voltage = status['voltage_setpoint']
+                        # Bei Force-Sync ODER signifikanter Differenz aktualisieren
+                        if self.force_gui_sync or abs(current_gui_voltage - netzteil_voltage) > 0.01:
+                            self.voltage_var.set(f"{netzteil_voltage:.2f}")
+                    except (ValueError, AttributeError):
+                        # Ungültiger Wert in GUI - überschreiben mit Netzteil-Wert
+                        self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
+
+                # Strom: Nur aktualisieren wenn KEIN Focus UND NICHT setting (außer Force-Sync)
+                if (not self.current_has_focus and not self.setting_in_progress) or self.force_gui_sync:
+                    try:
+                        current_gui_current = float(self.current_var.get().replace(',', '.'))
+                        netzteil_current = status['current_setpoint']
+                        # Bei Force-Sync ODER signifikanter Differenz aktualisieren
+                        if self.force_gui_sync or abs(current_gui_current - netzteil_current) > 0.01:
+                            self.current_var.set(f"{netzteil_current:.2f}")
+                    except (ValueError, AttributeError):
+                        # Ungültiger Wert in GUI - überschreiben mit Netzteil-Wert
+                        self.current_var.set(f"{status['current_setpoint']:.2f}")
+
+                # Force-Sync Flag zurücksetzen nach Aktualisierung
+                self.force_gui_sync = False
 
         # Graphen aktualisieren
         if len(self.timestamps) > 0:
@@ -586,38 +656,60 @@ class PowerSupplyGUI:
             return
 
         try:
+            # Focus-Timer sofort canceln (falls FocusOut gerade verzögert läuft)
+            if self.voltage_focus_timer:
+                self.root.after_cancel(self.voltage_focus_timer)
+                self.voltage_focus_timer = None
+
+            # SOFORT Flag setzen: Verhindert Überschreiben während Set-Operation
+            self.setting_in_progress = True
+            self.voltage_has_focus = False  # Focus ist jetzt definitiv weg
+
             # Komma in Punkt umwandeln (deutsche Tastatur)
             voltage_str = self.voltage_var.get().replace(',', '.')
             voltage = float(voltage_str)
 
-            # Status prüfen: Remote-Modus aktiv?
-            status = self.psu.read_status()
-            if status:
+            # Gesamte Set-Operation mit Lock schützen
+            with self.comm_lock:
+                # Status prüfen: Remote-Modus aktiv?
+                status = self.psu.read_status()
+                if not status:
+                    messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
+                    return
+
                 remote_was_off = not status['remote_mode']
-                print(f"[DEBUG] Vor Spannung setzen: Remote-Modus={'AUS' if remote_was_off else 'EIN'}")
 
                 # Falls Remote-Modus aus: temporär aktivieren
                 if remote_was_off:
-                    print("[DEBUG] Aktiviere Remote-Modus temporär...")
-                    self.psu.set_remote_mode(True)
+                    if not self.psu.set_remote_mode(True):
+                        messagebox.showerror("Fehler", "Remote-Modus konnte nicht aktiviert werden")
+                        return
 
                 # Spannung setzen
-                print(f"[DEBUG] Setze Spannung auf {voltage}V...")
                 success = self.psu.set_voltage(voltage)
-                print(f"[DEBUG] Spannung setzen: {'Erfolg' if success else 'Fehler'}")
 
                 # Remote-Modus wieder deaktivieren falls vorher aus
                 if remote_was_off:
-                    print("[DEBUG] Deaktiviere Remote-Modus wieder...")
                     self.psu.set_remote_mode(False)
 
-                if not success:
+                # Status neu lesen für Verifikation
+                final_status = self.psu.read_status()
+
+                if not success or not final_status:
+                    # Bei Fehler: GUI auf aktuellen Netzteil-Wert zurücksetzen
+                    if final_status:
+                        self.voltage_var.set(f"{final_status['voltage_setpoint']:.2f}")
                     messagebox.showerror("Fehler", "Spannung konnte nicht gesetzt werden")
-            else:
-                messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
+                else:
+                    # Erfolg: Force-Sync auslösen für sofortige GUI-Aktualisierung
+                    self.force_gui_sync = True
+                    self.last_status = final_status
 
         except ValueError as e:
             messagebox.showerror("Fehler", f"Ungültiger Wert: {e}")
+        finally:
+            # Flag IMMER zurücksetzen (auch bei Fehler)
+            self.setting_in_progress = False
 
     def _set_current(self):
         """Setzt die Strombegrenzung"""
@@ -625,18 +717,34 @@ class PowerSupplyGUI:
             return
 
         try:
+            # Focus-Timer sofort canceln (falls FocusOut gerade verzögert läuft)
+            if self.current_focus_timer:
+                self.root.after_cancel(self.current_focus_timer)
+                self.current_focus_timer = None
+
+            # SOFORT Flag setzen: Verhindert Überschreiben während Set-Operation
+            self.setting_in_progress = True
+            self.current_has_focus = False  # Focus ist jetzt definitiv weg
+
             # Komma in Punkt umwandeln (deutsche Tastatur)
             current_str = self.current_var.get().replace(',', '.')
             current = float(current_str)
 
-            # Status prüfen: Remote-Modus aktiv?
-            status = self.psu.read_status()
-            if status:
+            # Gesamte Set-Operation mit Lock schützen
+            with self.comm_lock:
+                # Status prüfen: Remote-Modus aktiv?
+                status = self.psu.read_status()
+                if not status:
+                    messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
+                    return
+
                 remote_was_off = not status['remote_mode']
 
                 # Falls Remote-Modus aus: temporär aktivieren
                 if remote_was_off:
-                    self.psu.set_remote_mode(True)
+                    if not self.psu.set_remote_mode(True):
+                        messagebox.showerror("Fehler", "Remote-Modus konnte nicht aktiviert werden")
+                        return
 
                 # Strom setzen
                 success = self.psu.set_current(current)
@@ -645,13 +753,24 @@ class PowerSupplyGUI:
                 if remote_was_off:
                     self.psu.set_remote_mode(False)
 
-                if not success:
+                # Status neu lesen für Verifikation
+                final_status = self.psu.read_status()
+
+                if not success or not final_status:
+                    # Bei Fehler: GUI auf aktuellen Netzteil-Wert zurücksetzen
+                    if final_status:
+                        self.current_var.set(f"{final_status['current_setpoint']:.2f}")
                     messagebox.showerror("Fehler", "Strom konnte nicht gesetzt werden")
-            else:
-                messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
+                else:
+                    # Erfolg: Force-Sync auslösen für sofortige GUI-Aktualisierung
+                    self.force_gui_sync = True
+                    self.last_status = final_status
 
         except ValueError as e:
             messagebox.showerror("Fehler", f"Ungültiger Wert: {e}")
+        finally:
+            # Flag IMMER zurücksetzen (auch bei Fehler)
+            self.setting_in_progress = False
 
     def _toggle_output(self):
         """Schaltet den Ausgang ein/aus"""
@@ -661,14 +780,21 @@ class PowerSupplyGUI:
         current_state = self.last_status.get('output_on', False)
         new_state = not current_state
 
-        # Status prüfen: Remote-Modus aktiv?
-        status = self.psu.read_status()
-        if status:
+        # Gesamte Set-Operation mit Lock schützen
+        with self.comm_lock:
+            # Status prüfen: Remote-Modus aktiv?
+            status = self.psu.read_status()
+            if not status:
+                messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
+                return
+
             remote_was_off = not status['remote_mode']
 
             # Falls Remote-Modus aus: temporär aktivieren
             if remote_was_off:
-                self.psu.set_remote_mode(True)
+                if not self.psu.set_remote_mode(True):
+                    messagebox.showerror("Fehler", "Remote-Modus konnte nicht aktiviert werden")
+                    return
 
             # Ausgang schalten
             success = self.psu.set_output(new_state)
@@ -677,10 +803,15 @@ class PowerSupplyGUI:
             if remote_was_off:
                 self.psu.set_remote_mode(False)
 
-            if not success:
+            # Status neu lesen für Verifikation
+            final_status = self.psu.read_status()
+
+            if not success or not final_status:
                 messagebox.showerror("Fehler", "Ausgang konnte nicht geschaltet werden")
-        else:
-            messagebox.showerror("Fehler", "Status konnte nicht gelesen werden")
+            else:
+                # Erfolg: Force-Sync auslösen
+                self.force_gui_sync = True
+                self.last_status = final_status
 
     def _toggle_remote(self):
         """Schaltet den Remote-Modus ein/aus"""
@@ -690,19 +821,29 @@ class PowerSupplyGUI:
         current_state = self.last_status.get('remote_mode', False)
         new_state = not current_state
 
-        if self.psu.set_remote_mode(new_state):
-            # Wenn Remote-Modus aktiviert wird: GUI-Werte ans Netzteil senden
-            if new_state:
-                try:
-                    voltage = float(self.voltage_var.get().replace(',', '.'))
-                    current = float(self.current_var.get().replace(',', '.'))
-                    self.psu.set_voltage(voltage)
-                    self.psu.set_current(current)
-                except ValueError:
-                    pass  # Ungültige Werte ignorieren
-        else:
-            # Nur bei Fehler Meldung zeigen
-            messagebox.showerror("Fehler", "Remote-Modus konnte nicht geschaltet werden")
+        # Gesamte Remote-Toggle-Operation mit Lock schützen
+        with self.comm_lock:
+            success = self.psu.set_remote_mode(new_state)
+
+            if success:
+                # Wenn Remote-Modus aktiviert wird: GUI-Werte ans Netzteil senden
+                if new_state:
+                    try:
+                        voltage = float(self.voltage_var.get().replace(',', '.'))
+                        current = float(self.current_var.get().replace(',', '.'))
+                        self.psu.set_voltage(voltage)
+                        self.psu.set_current(current)
+                    except ValueError:
+                        pass  # Ungültige Werte ignorieren
+
+                # Status neu lesen für Verifikation
+                final_status = self.psu.read_status()
+                if final_status:
+                    self.force_gui_sync = True
+                    self.last_status = final_status
+            else:
+                # Nur bei Fehler Meldung zeigen
+                messagebox.showerror("Fehler", "Remote-Modus konnte nicht geschaltet werden")
 
     def _get_available_ports(self):
         """Ermittelt alle verfügbaren COM-Ports"""
@@ -759,7 +900,8 @@ class PowerSupplyGUI:
             # Remote-Modus ausschalten damit Frontpanel wieder bedienbar ist
             if self.psu:
                 try:
-                    self.psu.set_remote_mode(False)
+                    with self.comm_lock:
+                        self.psu.set_remote_mode(False)
                 except:
                     pass  # Ignorieren falls Kommunikation schon unterbrochen
 
