@@ -2,7 +2,7 @@
 Version information for BK1788-Python
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __version_info__ = tuple(int(i) for i in __version__.split("."))
 
 __author__ = "feiglein74"

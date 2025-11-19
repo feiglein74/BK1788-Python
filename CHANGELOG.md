@@ -5,6 +5,37 @@ Alle wesentlichen Änderungen an diesem Projekt werden in dieser Datei dokumenti
 Das Format basiert auf [Keep a Changelog](https://keepachangelog.com/de/1.0.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [1.1.0] - 2025-11-19
+
+### Hinzugefügt
+- Threading-Lock (comm_lock) schützt alle seriellen Kommunikations-Operationen
+- Force-Sync Mechanismus: GUI wird nach Set-Operationen mit Netzteil verifiziert
+- Focus-Tracking mit 200ms Delay für Spinboxes (verhindert Überschreiben während Eingabe)
+- Setting-Protection Flag während Set-Operationen
+- Focus-Handler: _voltage_focus_in/out, _current_focus_in/out mit Timer-Management
+- Automatische GUI-Rücksetzung bei fehlgeschlagenen Set-Operationen
+
+### Geändert
+- Alle Set-Operationen (_set_voltage, _set_current, _toggle_output, _toggle_remote) mit Lock geschützt
+- Monitor-Thread read_status() mit Lock geschützt (verhindert Race Conditions)
+- GUI-Update Logik respektiert Focus UND Setting-in-Progress
+- Status-Verifikation nach jeder Set-Operation
+- FocusOut Events mit 200ms Delay (gibt Button-Click Zeit zum Reagieren)
+- Verbinden/Trennen/on_closing mit Lock-geschützter Kommunikation
+
+### Behoben
+- Race Conditions zwischen Monitor-Thread und Set-Operationen
+- GUI-Werte wurden während Tippen/Pfeiltasten-Nutzung überschrieben
+- FocusOut-Event vor Button-Click führte zu verlorenen Eingaben
+- Inkonsistente GUI nach fehlgeschlagenen Set-Operationen
+- Frontpanel-Änderungen wurden teilweise ignoriert
+
+### Technisch
+- Bidirektionale Synchronisation (GUI ↔ Netzteil) vollständig wasserdicht
+- Thread-Safety durch Lock-Mechanismus garantiert
+- Error-Handling mit finally-Blocks für garantiertes Flag-Zurücksetzen
+- Intelligente GUI-Update Logik: Nicht überschreiben wenn Focus ODER Setting aktiv
+
 ## [1.0.0] - 2025-11-14
 
 ### Hinzugefügt
@@ -103,6 +134,7 @@ und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 ### Sicherheit
 - TTL-Pegel Warnung (0-5V, NICHT RS-232 ±12V)
 
+[1.1.0]: https://github.com/feiglein74/BK1788-Python/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/feiglein74/BK1788-Python/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/feiglein74/BK1788-Python/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/feiglein74/BK1788-Python/compare/v0.2.0...v0.3.0
