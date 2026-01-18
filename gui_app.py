@@ -40,6 +40,14 @@ class PowerSupplyGUI:
         self.monitoring = False
         self.monitor_thread = None
 
+        # Verbindungs-Überwachung
+        self.consecutive_errors = 0
+        self.max_errors_before_disconnect = 5  # Nach 5 Fehlern: Verbindung verloren
+        self.connection_lost_flag = False  # Flag für "Verbindung verloren" Status
+        self.last_port = None  # Letzter verbundener Port für Auto-Reconnect
+        self.last_baudrate = None  # Letzte Baudrate für Auto-Reconnect
+        self.reconnect_check_interval = 1000  # Port-Check alle 1 Sekunde (ms)
+
         # Thread-Synchronisation für serielle Kommunikation
         self.comm_lock = threading.Lock()
         self.force_gui_sync = False  # Flag für Force-Update nach Set-Operationen
@@ -353,8 +361,8 @@ class PowerSupplyGUI:
 
     def _toggle_connection(self):
         """Verbindung herstellen/trennen"""
-        if not self.connected:
-            # Verbinden
+        if not self.connected and not self.connection_lost_flag:
+            # Verbinden (manuell)
             port = self.port_var.get()
             try:
                 baudrate = int(self.baudrate_var.get())
@@ -366,6 +374,11 @@ class PowerSupplyGUI:
 
             if self.psu.connect():
                 self.connected = True
+                self.connection_lost_flag = False  # Sicherstellen dass kein Auto-Reconnect läuft
+                self.consecutive_errors = 0
+                self.last_port = port
+                self.last_baudrate = baudrate
+
                 self.status_label.config(text="● Verbunden", foreground="green")
                 self.connect_btn.config(text="Trennen")
                 self.output_btn.config(state=tk.NORMAL)
@@ -399,7 +412,9 @@ class PowerSupplyGUI:
                 # Nur bei Fehler Meldung zeigen
                 messagebox.showerror("Fehler", f"Verbindung zu {port} fehlgeschlagen")
         else:
-            # Trennen
+            # Trennen (manuell) - auch wenn im "Verbindung verloren" Modus
+            # Stoppt auch den Auto-Reconnect
+            self.connection_lost_flag = False  # Auto-Reconnect stoppen
             self._stop_monitoring()
 
             if self.psu:
@@ -436,6 +451,108 @@ class PowerSupplyGUI:
             # Wenn Thread nicht beendet, einfach weitermachen (daemon=True killt ihn automatisch)
         self.monitor_thread = None
 
+    def _handle_connection_lost(self):
+        """Wird aufgerufen wenn die Verbindung zum Netzteil verloren geht"""
+        if self.connection_lost_flag:
+            return  # Bereits im "Verbindung verloren" Modus
+
+        self.connection_lost_flag = True
+        self.monitoring = False
+        self.consecutive_errors = 0
+
+        # Port und Baudrate merken für Auto-Reconnect
+        if self.psu:
+            self.last_port = self.psu.port
+            self.last_baudrate = self.psu.baudrate
+
+        # Altes Serial-Objekt aufräumen
+        if self.psu:
+            try:
+                self.psu.disconnect()
+            except:
+                pass
+            self.psu = None
+
+        # GUI aktualisieren
+        self.status_label.config(text="● Verbindung verloren", foreground="orange")
+        self.connect_btn.config(text="Verbinden")
+        self.output_btn.config(state=tk.DISABLED)
+        self.remote_btn.config(state=tk.DISABLED)
+        self.connected = False
+
+        # Auto-Reconnect starten
+        self._start_auto_reconnect()
+
+    def _start_auto_reconnect(self):
+        """Startet die automatische Wiederverbindung"""
+        if not self.connection_lost_flag:
+            return
+
+        # Prüfen ob der Port wieder verfügbar ist
+        available_ports = self._get_available_ports()
+
+        if self.last_port in available_ports:
+            # Port ist wieder da - versuche zu verbinden
+            self._attempt_reconnect()
+        else:
+            # Port noch nicht da - später nochmal prüfen
+            self.status_label.config(
+                text=f"● Warte auf {self.last_port}...",
+                foreground="orange"
+            )
+            self.root.after(self.reconnect_check_interval, self._start_auto_reconnect)
+
+    def _attempt_reconnect(self):
+        """Versucht die Verbindung wiederherzustellen"""
+        if not self.connection_lost_flag:
+            return
+
+        self.status_label.config(text="● Verbinde...", foreground="orange")
+        self.root.update_idletasks()
+
+        # Neues PSU-Objekt erstellen
+        self.psu = BK1788B(port=self.last_port, baudrate=self.last_baudrate)
+
+        if self.psu.connect():
+            # Verbindung erfolgreich
+            self.connection_lost_flag = False
+            self.connected = True
+            self.consecutive_errors = 0
+
+            self.status_label.config(text="● Verbunden", foreground="green")
+            self.connect_btn.config(text="Trennen")
+            self.output_btn.config(state=tk.NORMAL)
+            self.remote_btn.config(state=tk.NORMAL)
+
+            # Status lesen und Remote-Modus ausschalten
+            with self.comm_lock:
+                status = self.psu.read_status()
+                if status:
+                    if status['remote_mode']:
+                        self.psu.set_remote_mode(False)
+                        status = self.psu.read_status()
+
+                    if status:
+                        self.voltage_var.set(f"{status['voltage_setpoint']:.2f}")
+                        self.current_var.set(f"{status['current_setpoint']:.2f}")
+
+            # Monitoring neu starten
+            self._start_monitoring()
+        else:
+            # Verbindung fehlgeschlagen - später nochmal versuchen
+            if self.psu:
+                try:
+                    self.psu.disconnect()
+                except:
+                    pass
+                self.psu = None
+
+            self.status_label.config(
+                text=f"● Reconnect fehlgeschlagen, versuche erneut...",
+                foreground="orange"
+            )
+            self.root.after(self.reconnect_check_interval, self._start_auto_reconnect)
+
     def _monitor_loop(self):
         """Monitoring-Schleife (läuft in separatem Thread)"""
         while self.monitoring and self.connected:
@@ -445,6 +562,9 @@ class PowerSupplyGUI:
                     status = self.psu.read_status()
 
                 if status:
+                    # Erfolg: Fehler-Zähler zurücksetzen
+                    self.consecutive_errors = 0
+
                     # Zeitstempel hinzufügen
                     current_time = time.time() - self.start_time
 
@@ -457,13 +577,25 @@ class PowerSupplyGUI:
 
                     # Status zwischenspeichern für GUI-Update
                     self.last_status = status
+                else:
+                    # Keine Antwort: Fehler zählen
+                    self.consecutive_errors += 1
+                    if self.consecutive_errors >= self.max_errors_before_disconnect:
+                        # Verbindung verloren - GUI im Hauptthread aktualisieren
+                        self.root.after(0, self._handle_connection_lost)
+                        return  # Thread beenden
 
                 # Pause zwischen Messungen (10 Hz)
                 time.sleep(0.1)
 
             except Exception as e:
-                print(f"Fehler beim Monitoring: {e}")
-                time.sleep(1)
+                # Exception: Fehler zählen
+                self.consecutive_errors += 1
+                if self.consecutive_errors >= self.max_errors_before_disconnect:
+                    # Verbindung verloren - GUI im Hauptthread aktualisieren
+                    self.root.after(0, self._handle_connection_lost)
+                    return  # Thread beenden
+                time.sleep(0.5)  # Kürzere Pause bei Fehlern
 
     def _schedule_gui_update(self):
         """Plant regelmäßige GUI-Updates"""
@@ -893,6 +1025,9 @@ class PowerSupplyGUI:
 
     def on_closing(self):
         """Wird beim Schließen des Fensters aufgerufen"""
+        # Auto-Reconnect stoppen
+        self.connection_lost_flag = False
+
         # Einstellungen speichern
         try:
             self._save_settings()
