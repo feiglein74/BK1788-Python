@@ -61,3 +61,7 @@ gui_config.json
 
 # Claude Code lokale Einstellungen
 .claude/settings.local.json
+
+# Urheberrechtlich geschützte Hersteller-Dokumente (B&K Precision) — NICHT öffentlich verbreiten!
+# Nur lokal als Arbeitsgrundlage; offiziell beziehen (Manual: B&K-Website, Schaltplan: EEVblog-Repair-Thread).
+*.pdf

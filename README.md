@@ -148,6 +148,17 @@ BK1788-Python/
 └── CLAUDE.md                            # Entwickler-Dokumentation
 ```
 
+## Hersteller-Dokumentation (nicht im Repo enthalten)
+
+Das offizielle Instruction Manual und der Schaltplan sind **urheberrechtlich geschützt (© B&K Precision)** und werden hier **nicht mitgeliefert** (per `.gitignore` ausgeschlossen). Bezugsquellen:
+
+| Dokument | Bezugsquelle |
+|---|---|
+| **Instruction Manual 1788B** | Offizielle B&K-Precision-Website → Produktseite 1788B → Downloads |
+| **Schaltplan 1785B/1788** | EEVblog-Repair-Thread zum 1785B/1788 (von B&K an Kunden herausgegeben) |
+
+Reparatur-/Messhinweise auf Basis des Schaltplans (eigene Analyse) stehen in [`REPARATUR_MESSPLAN.md`](REPARATUR_MESSPLAN.md).
+
 ## Technische Details
 
 ### Protokoll
