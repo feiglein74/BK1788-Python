@@ -1,5 +1,5 @@
 title: BK1788-Python
-description: Python GUI and library for the B&K Precision 1788B (32 V / 6 A) DC power supply via TTL serial: protocol / command set, wiring, repair notes.
+description: "Python GUI and library for the B&K Precision 1788B (32 V / 6 A) DC power supply via TTL serial: protocol / command set, wiring, repair notes."
 theme: jekyll-theme-cayman
 exclude:
   - CLAUDE.md
