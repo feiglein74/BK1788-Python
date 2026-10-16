@@ -5,6 +5,21 @@ Alle wesentlichen Änderungen an diesem Projekt werden in dieser Datei dokumenti
 Das Format basiert auf [Keep a Changelog](https://keepachangelog.com/de/1.0.0/),
 und dieses Projekt folgt [Semantic Versioning](https://semver.org/lang/de/).
 
+## [1.2.0] - 2026-10-16
+
+### Hinzugefügt
+- Auto-Reconnect: Verbindungsverlust nach 5 aufeinanderfolgenden Fehlern erkannt, automatische Wiederverbindung sobald der Port wieder verfügbar ist (Status-Label orange während Reconnect; manuelles Trennen stoppt den Reconnect)
+- PyInstaller-Build (`BK1788B.spec`) und GitHub-Action, die bei Tags `v*` ein Windows-ZIP als Release baut
+- `REPARATUR_MESSPLAN.md`: Mess-/Diagnoseplan für „hängt in CC, 0 V Ausgang“
+- MIT-Lizenz
+- Englischer README-Kopf (Quickstart, Key facts), GitHub-Pages-Konfiguration
+
+### Behoben
+- matplotlib xlim-Warnung bei einzelnem Datenpunkt
+
+### Dokumentation
+- Herstellerdokumente (PDF) per `.gitignore` aus dem Repo ausgeschlossen, Bezugsquellen im README
+
 ## [1.1.0] - 2025-11-19
 
 ### Hinzugefügt
